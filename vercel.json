@@ -17,6 +17,10 @@
       "destination": "/api/ai-assist"
     },
     {
+      "source": "/api/ai-diagnose",
+      "destination": "/api/ai-diagnose"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

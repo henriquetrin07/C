@@ -47,3 +47,21 @@ export interface ExampleTemplate {
   stdin?: string;
   files: SourceFile[];
 }
+
+export interface AIDiagnosis {
+  id: string;
+  hasError: boolean;
+  errorTitle: string;
+  file?: string;
+  line?: number;
+  col?: number;
+  whatWentWrong: string;
+  whyItHappened: string;
+  howToFix: string;
+  originalSnippet?: string;
+  fixedSnippet?: string;
+  fullFixedCode?: string;
+  category: 'syntax' | 'type_mismatch' | 'memory' | 'include' | 'runtime' | 'logic' | 'warning' | 'general';
+  source: 'gemini' | 'heuristic';
+}
+

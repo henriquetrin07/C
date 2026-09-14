@@ -1,6 +1,6 @@
 {
   "name": "C Web IDE & Compiler",
-  "description": "Ambiente de desenvolvimento integrado (IDE) no navegador para escrever, compilar, testar e depurar código C com execução em tempo real e entrada interativa.",
+  "description": "IDE online de linguagem C no estilo CDB compiler com execução em tempo real, suporte a GCC/TCC, entrada stdin e IA para diagnóstico de erros, explicação do porquê ocorrem e correção automática.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

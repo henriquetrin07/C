@@ -10,6 +10,7 @@ interface CodeEditorProps {
   diagnostics: CompilerDiagnostic[];
   onRun: () => void;
   highlightedLine?: number | null;
+  onOpenAiDiagnosis?: () => void;
 }
 
 export const CodeEditor: React.FC<CodeEditorProps> = ({
@@ -19,10 +20,22 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   diagnostics,
   onRun,
   highlightedLine,
+  onOpenAiDiagnosis,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const preRef = useRef<HTMLPreElement>(null);
   const linesGutterRef = useRef<HTMLDivElement>(null);
+  const [cursorPos, setCursorPos] = React.useState({ line: 1, col: 1 });
+
+  const updateCursorPosition = () => {
+    if (!textareaRef.current) return;
+    const { selectionStart, value } = textareaRef.current;
+    const textBefore = value.substring(0, selectionStart);
+    const linesBefore = textBefore.split('\n');
+    const currentLine = linesBefore.length;
+    const currentCol = linesBefore[linesBefore.length - 1].length + 1;
+    setCursorPos({ line: currentLine, col: currentCol });
+  };
 
   // Split code into lines for gutter
   const lines = useMemo(() => {
@@ -210,8 +223,14 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           ref={textareaRef}
           id="code-editor-textarea"
           value={code}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => {
+            onChange(e.target.value);
+            updateCursorPosition();
+          }}
           onKeyDown={handleKeyDown}
+          onKeyUp={updateCursorPosition}
+          onClick={updateCursorPosition}
+          onSelect={updateCursorPosition}
           onScroll={handleScroll}
           spellCheck={false}
           autoCapitalize="off"
@@ -220,6 +239,39 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           className="absolute inset-0 w-full h-full m-0 py-3 px-4 font-mono-code text-[13px] leading-[21px] bg-transparent text-transparent caret-white outline-none resize-none whitespace-pre overflow-auto z-10 selection:bg-blue-600/40"
           placeholder="// Escreva seu código C aqui..."
         />
+      </div>
+
+      {/* OnlineGDB Style Status Bar at bottom of editor */}
+      <div className="absolute bottom-0 inset-x-0 bg-[#090d13] border-t border-slate-800/80 px-3 py-1 flex items-center justify-between text-[11px] text-slate-400 font-sans z-20 select-none">
+        <div className="flex items-center space-x-3">
+          <span className="font-mono text-slate-300">
+            Linha {cursorPos.line}, Coluna {cursorPos.col}
+          </span>
+          <span className="hidden sm:inline text-slate-600">|</span>
+          <span className="hidden sm:inline">Espaços: 4</span>
+          <span className="hidden sm:inline text-slate-600">|</span>
+          <span className="hidden md:inline">UTF-8</span>
+          <span className="hidden md:inline text-slate-600">|</span>
+          <span className="hidden md:inline font-mono text-blue-400">C (gcc)</span>
+        </div>
+
+        {/* Current line error hint if any */}
+        {diagnosticsByLine.has(cursorPos.line) && (
+          <div className="flex items-center space-x-1.5 text-rose-400">
+            <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-ping" />
+            <span className="truncate max-w-[200px] md:max-w-xs text-[10px]">
+              {diagnosticsByLine.get(cursorPos.line)?.message}
+            </span>
+            {onOpenAiDiagnosis && (
+              <button
+                onClick={onOpenAiDiagnosis}
+                className="ml-1 text-[10px] text-amber-300 hover:text-amber-200 underline font-semibold cursor-pointer"
+              >
+                Ver IA
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

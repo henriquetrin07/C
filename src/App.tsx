@@ -6,14 +6,15 @@ import { TerminalPanel } from './components/TerminalPanel';
 import { CompilerSettingsModal } from './components/CompilerSettingsModal';
 import { ExamplesModal } from './components/ExamplesModal';
 import { AssemblyModal } from './components/AssemblyModal';
-import { SourceFile, CompilerOptions, RunResult, ExampleTemplate } from './types';
+import { SourceFile, CompilerOptions, RunResult, ExampleTemplate, AIDiagnosis } from './types';
 import { EXAMPLES } from './data/examples';
-import { Columns, Rows } from 'lucide-react';
+import { Columns, Rows, Check, AlertCircle } from 'lucide-react';
+import { formatCCode } from './utils/cFormatter';
+import { analyzeErrorWithAI } from './utils/aiDiagnostician';
 import {
   checkBackendAvailability,
   executeCCode,
   generateAssembly,
-  getAiAssistance,
   EngineMode,
 } from './utils/cRunner';
 
@@ -66,6 +67,21 @@ export default function App() {
   const [engineMode, setEngineMode] = useState<EngineMode>('cloud');
   const [highlightedLine, setHighlightedLine] = useState<number | null>(null);
 
+  // Terminal active tab state ('output' | 'stdin' | 'diagnostics' | 'assembly' | 'ai')
+  const [terminalTab, setTerminalTab] = useState<'output' | 'stdin' | 'diagnostics' | 'assembly' | 'ai'>('output');
+
+  // AI Diagnostic State
+  const [diagnosis, setDiagnosis] = useState<AIDiagnosis | null>(null);
+  const [isLoadingDiagnosis, setIsLoadingDiagnosis] = useState<boolean>(false);
+
+  // Toast feedback notification
+  const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'info' } | null>(null);
+
+  const showToast = (text: string, type: 'success' | 'info' = 'success') => {
+    setToastMessage({ text, type });
+    setTimeout(() => setToastMessage(null), 3500);
+  };
+
   // Modals state
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isExamplesOpen, setIsExamplesOpen] = useState(false);
@@ -74,10 +90,6 @@ export default function App() {
   // Assembly state
   const [assemblyCode, setAssemblyCode] = useState<string | null>(null);
   const [isLoadingAssembly, setIsLoadingAssembly] = useState(false);
-
-  // AI Assistant state
-  const [aiResponse, setAiResponse] = useState<string | null>(null);
-  const [isLoadingAi, setIsLoadingAi] = useState(false);
 
   // Sync to local storage
   useEffect(() => {
@@ -171,17 +183,34 @@ export default function App() {
 
       setRunResult(result);
 
-      // If compilation failed and we have errors, highlight the first error line
-      if (!result.success && result.diagnostics.length > 0) {
-        const firstErr = result.diagnostics.find((d) => d.type === 'error') || result.diagnostics[0];
-        const targetFile = files.find((f) => f.name === firstErr.file);
-        if (targetFile) {
-          setActiveFileId(targetFile.id);
+      // If compilation failed or runtime error occurred, automatically diagnose with AI
+      const hasError = !result.success || (result.exitCode !== 0 && result.exitCode !== null) || result.timedOut;
+      if (hasError) {
+        setIsLoadingDiagnosis(true);
+        // Highlight first error line in editor
+        if (result.diagnostics.length > 0) {
+          const firstErr = result.diagnostics.find((d) => d.type === 'error') || result.diagnostics[0];
+          const targetFile = files.find((f) => f.name === firstErr.file);
+          if (targetFile) {
+            setActiveFileId(targetFile.id);
+          }
+          setHighlightedLine(firstErr.line);
         }
-        setHighlightedLine(firstErr.line);
+
+        analyzeErrorWithAI(activeFile, files, result)
+          .then((diag) => {
+            setDiagnosis(diag);
+            setIsLoadingDiagnosis(false);
+          })
+          .catch(() => {
+            setIsLoadingDiagnosis(false);
+          });
+      } else {
+        // Successful clean run
+        setDiagnosis(null);
       }
     } catch (err: any) {
-      setRunResult({
+      const fakeErrResult: RunResult = {
         success: false,
         phase: 'compilation',
         compiler: compilerOptions.compiler,
@@ -191,11 +220,66 @@ export default function App() {
         stderr: '',
         exitCode: -1,
         diagnostics: [],
-      });
+      };
+      setRunResult(fakeErrResult);
+      setIsLoadingDiagnosis(true);
+      analyzeErrorWithAI(activeFile, files, fakeErrResult)
+        .then((diag) => {
+          setDiagnosis(diag);
+          setIsLoadingDiagnosis(false);
+        })
+        .catch(() => setIsLoadingDiagnosis(false));
     } finally {
       setIsRunning(false);
     }
-  }, [isRunning, compilerOptions, files, stdin, engineMode]);
+  }, [isRunning, compilerOptions, files, stdin, engineMode, activeFile]);
+
+  // Debug action (OnlineGDB style): runs and switches straight to the AI diagnosis / inspection tab
+  const handleDebug = async () => {
+    setTerminalTab('ai');
+    setIsLoadingDiagnosis(true);
+    try {
+      const { result } = await executeCCode(files, stdin, compilerOptions, engineMode);
+      setRunResult(result);
+      const diag = await analyzeErrorWithAI(activeFile, files, result);
+      setDiagnosis(diag);
+    } catch (err: any) {
+      showToast('Falha na depuração: ' + err.message, 'info');
+    } finally {
+      setIsLoadingDiagnosis(false);
+    }
+  };
+
+  // Beautify action: auto-format C code
+  const handleBeautify = () => {
+    if (!activeFile) return;
+    const formatted = formatCCode(activeFile.content);
+    handleUpdateCode(formatted);
+    showToast('Código C formatado ({ } Beautify)!');
+  };
+
+  // Apply AI Fix to code
+  const handleApplyFix = (fixedCode: string, fileName?: string) => {
+    const targetName = fileName || activeFile.name;
+    setFiles((prev) =>
+      prev.map((f) => (f.name === targetName ? { ...f, content: fixedCode } : f))
+    );
+    showToast(`Correção da IA aplicada em ${targetName}! Pressione F9 para rodar.`);
+  };
+
+  // Re-run AI analysis with custom question
+  const handleRequestReanalysis = async (customQuestion?: string) => {
+    setIsLoadingDiagnosis(true);
+    setTerminalTab('ai');
+    try {
+      const diag = await analyzeErrorWithAI(activeFile, files, runResult, customQuestion);
+      setDiagnosis(diag);
+    } catch (err: any) {
+      showToast('Erro ao consultar IA: ' + err.message, 'info');
+    } finally {
+      setIsLoadingDiagnosis(false);
+    }
+  };
 
   // Global hotkeys (Ctrl+Enter, F9)
   useEffect(() => {
@@ -221,7 +305,7 @@ export default function App() {
       setRunResult(null);
       setHighlightedLine(null);
       setAssemblyCode(null);
-      setAiResponse(null);
+      setDiagnosis(null);
     }
   };
 
@@ -237,7 +321,7 @@ export default function App() {
     setRunResult(null);
     setHighlightedLine(null);
     setAssemblyCode(null);
-    setAiResponse(null);
+    setDiagnosis(null);
   };
 
   // Fetch assembly
@@ -259,24 +343,6 @@ export default function App() {
       setAssemblyCode(`// Erro:\n${err.message}`);
     } finally {
       setIsLoadingAssembly(false);
-    }
-  };
-
-  // Ask AI Assistant
-  const handleAskAi = async (type: 'explain-error' | 'explain-code' | 'optimize') => {
-    if (isLoadingAi) return;
-    setIsLoadingAi(true);
-    setAiResponse(null);
-    try {
-      const outputText = runResult
-        ? runResult.compileOutput || runResult.stderr || runResult.stdout
-        : '';
-      const responseText = await getAiAssistance(activeFile.content, outputText, type);
-      setAiResponse(responseText);
-    } catch (err: any) {
-      setAiResponse(`Erro: ${err.message}`);
-    } finally {
-      setIsLoadingAi(false);
     }
   };
 
@@ -302,32 +368,53 @@ export default function App() {
     setHighlightedLine(line);
   };
 
+  const hasActiveErrors =
+    Boolean(runResult && (!runResult.success || (runResult.exitCode !== 0 && runResult.exitCode !== null))) ||
+    Boolean(diagnosis?.hasError);
+
   return (
-    <div className="flex flex-col h-screen w-screen bg-[#0d1117] text-slate-100 overflow-hidden font-sans">
-      {/* Top Navigation */}
+    <div className="flex flex-col h-screen w-screen bg-[#0d1117] text-slate-100 overflow-hidden font-sans select-none">
+      {/* Toast Notification */}
+      {toastMessage && (
+        <div className="fixed top-12 right-4 z-50 flex items-center space-x-2 bg-slate-900 border border-emerald-500/60 text-emerald-200 px-3.5 py-2 rounded-lg shadow-xl shadow-black/60 text-xs animate-bounce font-sans">
+          <Check className="w-4 h-4 text-emerald-400" />
+          <span>{toastMessage.text}</span>
+        </div>
+      )}
+
+      {/* OnlineGDB Style Top Navigation Bar */}
       <Navbar
         isRunning={isRunning}
         onRun={handleRun}
+        onStop={() => setIsRunning(false)}
+        onDebug={handleDebug}
+        onBeautify={handleBeautify}
         onReset={handleReset}
         onNewFile={() => handleAddFile('arquivo_' + (files.length + 1) + '.c')}
         onOpenExamples={() => setIsExamplesOpen(true)}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenAssembly={() => {
-          setIsAssemblyOpen(true);
+          setTerminalTab('assembly');
           if (!assemblyCode) handleFetchAssembly();
         }}
         onOpenAiAssist={() => {
-          handleAskAi('explain-code');
+          setTerminalTab('ai');
+          if (!diagnosis) {
+            handleRequestReanalysis();
+          }
         }}
         onDownloadProject={handleDownloadProject}
+        onToggleStdin={() => setTerminalTab(terminalTab === 'stdin' ? 'output' : 'stdin')}
         compilerOptions={compilerOptions}
+        onChangeStandard={(std) => setCompilerOptions((prev) => ({ ...prev, standard: std }))}
         engineMode={engineMode}
+        hasErrors={hasActiveErrors}
       />
 
       {/* Editor & Console Work Area */}
       <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
         {/* Sub-bar: Tabs & Layout View Controls */}
-        <div className="flex items-center justify-between bg-slate-900 border-b border-slate-800 pr-3">
+        <div className="flex items-center justify-between bg-[#161b22] border-b border-slate-800 pr-3">
           <div className="flex-1 min-w-0">
             <FileTabs
               files={files}
@@ -385,6 +472,10 @@ export default function App() {
                 diagnostics={runResult?.diagnostics || []}
                 onRun={handleRun}
                 highlightedLine={highlightedLine}
+                onOpenAiDiagnosis={() => {
+                  setTerminalTab('ai');
+                  if (!diagnosis) handleRequestReanalysis();
+                }}
               />
             ) : (
               <div className="flex-1 flex items-center justify-center text-slate-500">
@@ -393,7 +484,7 @@ export default function App() {
             )}
           </div>
 
-          {/* Terminal and I/O Panel */}
+          {/* Terminal and I/O Panel (OnlineGDB style with AI Diagnostic) */}
           <div
             className={`flex flex-col min-h-0 ${
               splitOrientation === 'horizontal' ? 'w-full md:w-2/5 h-1/2 md:h-full' : 'w-full h-2/5'
@@ -409,9 +500,13 @@ export default function App() {
               assemblyCode={assemblyCode}
               isLoadingAssembly={isLoadingAssembly}
               onFetchAssembly={handleFetchAssembly}
-              onAskAi={handleAskAi}
-              aiResponse={aiResponse}
-              isLoadingAi={isLoadingAi}
+              diagnosis={diagnosis}
+              isLoadingDiagnosis={isLoadingDiagnosis}
+              activeFile={activeFile}
+              onApplyFix={handleApplyFix}
+              onRequestReanalysis={handleRequestReanalysis}
+              activeTab={terminalTab}
+              onTabChange={setTerminalTab}
             />
           </div>
         </div>

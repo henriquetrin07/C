@@ -1,7 +1,22 @@
 import React, { useState } from 'react';
-import { Terminal, Keyboard, AlertCircle, AlertTriangle, Cpu, Sparkles, Trash2, Copy, Check, Clock, ShieldAlert } from 'lucide-react';
-import { RunResult, CompilerDiagnostic } from '../types';
+import {
+  Terminal,
+  Keyboard,
+  AlertCircle,
+  AlertTriangle,
+  Cpu,
+  Sparkles,
+  Trash2,
+  Copy,
+  Check,
+  Clock,
+  ShieldAlert,
+  ArrowRight,
+  ExternalLink,
+} from 'lucide-react';
+import { RunResult, SourceFile, AIDiagnosis } from '../types';
 import { formatDuration } from '../utils/parser';
+import { AIDiagnosisPanel } from './AIDiagnosisPanel';
 
 interface TerminalPanelProps {
   runResult: RunResult | null;
@@ -13,9 +28,14 @@ interface TerminalPanelProps {
   assemblyCode: string | null;
   isLoadingAssembly: boolean;
   onFetchAssembly: () => void;
-  onAskAi: (type: 'explain-error' | 'explain-code' | 'optimize') => void;
-  aiResponse: string | null;
-  isLoadingAi: boolean;
+  // AI Diagnostics
+  diagnosis: AIDiagnosis | null;
+  isLoadingDiagnosis: boolean;
+  activeFile: SourceFile;
+  onApplyFix: (fixedCode: string, fileName?: string) => void;
+  onRequestReanalysis: (customQuestion?: string) => void;
+  activeTab: 'output' | 'stdin' | 'diagnostics' | 'assembly' | 'ai';
+  onTabChange: (tab: 'output' | 'stdin' | 'diagnostics' | 'assembly' | 'ai') => void;
 }
 
 export const TerminalPanel: React.FC<TerminalPanelProps> = ({
@@ -28,16 +48,20 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
   assemblyCode,
   isLoadingAssembly,
   onFetchAssembly,
-  onAskAi,
-  aiResponse,
-  isLoadingAi,
+  diagnosis,
+  isLoadingDiagnosis,
+  activeFile,
+  onApplyFix,
+  onRequestReanalysis,
+  activeTab,
+  onTabChange,
 }) => {
-  const [activeTab, setActiveTab] = useState<'output' | 'stdin' | 'diagnostics' | 'assembly' | 'ai'>('output');
   const [copied, setCopied] = useState(false);
 
   const diagnostics = runResult?.diagnostics || [];
   const errorCount = diagnostics.filter((d) => d.type === 'error').length;
   const warningCount = diagnostics.filter((d) => d.type === 'warning').length;
+  const hasExecutionError = runResult && (!runResult.success || (runResult.exitCode !== 0 && runResult.exitCode !== null));
 
   const handleCopyOutput = () => {
     const textToCopy = (runResult?.stdout || '') + (runResult?.stderr ? '\n' + runResult.stderr : '');
@@ -49,22 +73,22 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
   };
 
   return (
-    <div className="flex flex-col h-full bg-[#0a0e14] border-t border-slate-800 font-mono text-xs select-text">
-      {/* Panel Tab Header */}
-      <div className="bg-slate-900 border-b border-slate-800/90 px-3 py-1.5 flex items-center justify-between select-none">
-        <div className="flex items-center space-x-2 overflow-x-auto">
-          {/* Output Tab */}
+    <div className="flex flex-col h-full bg-[#0d1117] border-t border-slate-800 font-mono text-xs select-text">
+      {/* Panel Tab Header - OnlineGDB style */}
+      <div className="bg-[#161b22] border-b border-slate-800 px-3 py-1.5 flex items-center justify-between select-none">
+        <div className="flex items-center space-x-1 sm:space-x-2 overflow-x-auto">
+          {/* Console Tab */}
           <button
             id="tab-terminal-output"
-            onClick={() => setActiveTab('output')}
+            onClick={() => onTabChange('output')}
             className={`flex items-center space-x-1.5 px-3 py-1 rounded text-xs transition-colors font-sans ${
               activeTab === 'output'
                 ? 'bg-slate-800 text-emerald-400 font-semibold'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
             }`}
           >
             <Terminal className="w-3.5 h-3.5" />
-            <span>Terminal</span>
+            <span>Console</span>
             {runResult && (
               <span
                 className={`w-1.5 h-1.5 rounded-full ${
@@ -74,39 +98,61 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
             )}
           </button>
 
+          {/* AI Diagnosis Tab (Highlighted with badge) */}
+          <button
+            id="tab-terminal-ai"
+            onClick={() => onTabChange('ai')}
+            className={`flex items-center space-x-1.5 px-3 py-1 rounded text-xs transition-colors font-sans ${
+              activeTab === 'ai'
+                ? 'bg-slate-800 text-amber-300 font-semibold border border-amber-500/30'
+                : (diagnosis?.hasError || hasExecutionError)
+                ? 'text-amber-300 bg-amber-950/40 hover:bg-amber-900/60 border border-amber-800/60 font-semibold'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+            <span>Diagnóstico IA</span>
+            {diagnosis?.hasError && (
+              <span className="px-1.5 py-0.2 rounded-full text-[9px] bg-rose-900 text-rose-200 font-bold">
+                1 Erro
+              </span>
+            )}
+          </button>
+
           {/* Stdin Tab */}
           <button
             id="tab-terminal-stdin"
-            onClick={() => setActiveTab('stdin')}
+            onClick={() => onTabChange('stdin')}
             className={`flex items-center space-x-1.5 px-3 py-1 rounded text-xs transition-colors font-sans ${
               activeTab === 'stdin'
                 ? 'bg-slate-800 text-blue-400 font-semibold'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
             }`}
           >
             <Keyboard className="w-3.5 h-3.5" />
             <span>Entrada (stdin)</span>
-            {stdin.trim() && (
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
-            )}
+            {stdin.trim() && <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />}
           </button>
 
           {/* Diagnostics Tab */}
           <button
             id="tab-terminal-diagnostics"
-            onClick={() => setActiveTab('diagnostics')}
+            onClick={() => onTabChange('diagnostics')}
             className={`flex items-center space-x-1.5 px-3 py-1 rounded text-xs transition-colors font-sans ${
               activeTab === 'diagnostics'
                 ? 'bg-slate-800 text-amber-400 font-semibold'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
             }`}
           >
             <AlertCircle className="w-3.5 h-3.5" />
-            <span>Diagnósticos</span>
+            <span className="hidden sm:inline">Erros GCC</span>
+            <span className="sm:hidden">GCC</span>
             {(errorCount > 0 || warningCount > 0) && (
               <span
                 className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
-                  errorCount > 0 ? 'bg-rose-950 text-rose-300 border border-rose-800' : 'bg-amber-950 text-amber-300 border border-amber-800'
+                  errorCount > 0
+                    ? 'bg-rose-950 text-rose-300 border border-rose-800'
+                    : 'bg-amber-950 text-amber-300 border border-amber-800'
                 }`}
               >
                 {errorCount > 0 ? `${errorCount}E` : `${warningCount}W`}
@@ -118,38 +164,25 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
           <button
             id="tab-terminal-assembly"
             onClick={() => {
-              setActiveTab('assembly');
+              onTabChange('assembly');
               if (!assemblyCode) onFetchAssembly();
             }}
             className={`flex items-center space-x-1.5 px-3 py-1 rounded text-xs transition-colors font-sans ${
               activeTab === 'assembly'
                 ? 'bg-slate-800 text-purple-400 font-semibold'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
             }`}
           >
             <Cpu className="w-3.5 h-3.5" />
-            <span>Assembly x86_64</span>
-          </button>
-
-          {/* AI Tutor Tab */}
-          <button
-            id="tab-terminal-ai"
-            onClick={() => setActiveTab('ai')}
-            className={`flex items-center space-x-1.5 px-3 py-1 rounded text-xs transition-colors font-sans ${
-              activeTab === 'ai'
-                ? 'bg-slate-800 text-amber-300 font-semibold'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
-            }`}
-          >
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>Tutor C</span>
+            <span className="hidden md:inline">Assembly x86_64</span>
+            <span className="md:hidden">ASM</span>
           </button>
         </div>
 
         {/* Action Controls and Stats */}
-        <div className="flex items-center space-x-3">
+        <div className="flex items-center space-x-2">
           {runResult && (
-            <div className="hidden sm:flex items-center space-x-2 text-[11px] text-slate-400">
+            <div className="hidden lg:flex items-center space-x-2 text-[11px] text-slate-400 font-sans">
               <span className="flex items-center space-x-1 font-mono">
                 <Clock className="w-3 h-3 text-slate-500" />
                 <span>
@@ -172,7 +205,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
               {runResult.timedOut && (
                 <span className="flex items-center space-x-1 px-1.5 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-800 text-[10px]">
                   <ShieldAlert className="w-3 h-3" />
-                  <span>Timeout (6s)</span>
+                  <span>Timeout</span>
                 </span>
               )}
             </div>
@@ -199,44 +232,67 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
       </div>
 
       {/* Tab Content Body */}
-      <div className="flex-1 overflow-y-auto p-3 font-mono-code text-[12px] leading-relaxed">
-        {/* Output Tab View */}
+      <div className="flex-1 overflow-y-auto font-mono text-[12px] leading-relaxed">
+        {/* Output / Console Tab View */}
         {activeTab === 'output' && (
-          <div className="space-y-2">
+          <div className="p-3 space-y-3">
+            {/* Running Spinner */}
             {isRunning && (
-              <div className="flex items-center space-x-2 text-amber-400 py-2">
+              <div className="flex items-center space-x-2 text-amber-400 py-2 font-sans">
                 <div className="w-3 h-3 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
-                <span>Compilando com {runResult?.compiler?.toUpperCase() || 'GCC'} e executando processo...</span>
+                <span>Compilando com GCC e executando binário ELF...</span>
+              </div>
+            )}
+
+            {/* Error Notification Alert Banner (OnlineGDB style with instant AI diagnosis trigger) */}
+            {hasExecutionError && (
+              <div className="bg-rose-950/40 border border-rose-800/80 rounded-lg p-2.5 flex items-center justify-between gap-2 font-sans">
+                <div className="flex items-center space-x-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-400 flex-shrink-0" />
+                  <span className="text-xs text-rose-200 font-medium">
+                    {runResult?.phase === 'compilation'
+                      ? 'Erro de compilação detectado no código C!'
+                      : 'O programa finalizou com erro de execução!'}
+                  </span>
+                </div>
+                <button
+                  onClick={() => onTabChange('ai')}
+                  className="flex items-center space-x-1.5 px-2.5 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold shadow-sm transition-colors flex-shrink-0"
+                >
+                  <Sparkles className="w-3 h-3" />
+                  <span>Ver Diagnóstico & Correção da IA</span>
+                  <ArrowRight className="w-3 h-3 ml-0.5" />
+                </button>
               </div>
             )}
 
             {!isRunning && !runResult && (
-              <div className="text-slate-500 py-4 font-sans text-center">
-                <p className="font-medium text-slate-400">Nenhuma execução ativa no momento.</p>
-                <p className="text-xs text-slate-600 mt-1">
-                  Clique em <span className="text-emerald-400 font-semibold">Executar (Ctrl+Enter)</span> acima para compilar seu código C.
+              <div className="text-slate-500 py-8 font-sans text-center space-y-2">
+                <p className="font-semibold text-slate-300">Terminal OnlineGDB pronto para execução.</p>
+                <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                  Pressione <kbd className="px-1.5 py-0.5 bg-slate-800 text-slate-200 rounded border border-slate-700 font-mono">F9</kbd> ou <kbd className="px-1.5 py-0.5 bg-slate-800 text-slate-200 rounded border border-slate-700 font-mono">Ctrl+Enter</kbd> para compilar e rodar.
                 </p>
               </div>
             )}
 
             {runResult && (
-              <div>
-                {/* Compiler Output if Warnings or Errors */}
+              <div className="space-y-2">
+                {/* OnlineGDB compilation command simulated strip */}
+                <div className="text-slate-500 text-[11px] pb-1 border-b border-slate-800/80 flex items-center justify-between">
+                  <span>$ gcc -std=c11 -O0 -Wall -Wextra {activeFile.name} -lm && ./a.out</span>
+                  <span className="text-slate-600">{runResult.compiler.toUpperCase()} 64-bit</span>
+                </div>
+
+                {/* Compiler Diagnostics Output if Warnings/Errors */}
                 {runResult.compileOutput && (
-                  <div className="mb-3 p-2.5 rounded bg-slate-900/90 border border-slate-800">
+                  <div className="p-2.5 rounded bg-slate-900/90 border border-slate-800">
                     <div className="text-[11px] font-sans font-semibold text-slate-400 mb-1 flex items-center justify-between">
-                      <span>Saída do Compilador ({runResult.compiler.toUpperCase()}):</span>
-                      {errorCount > 0 && (
-                        <button
-                          onClick={() => onAskAi('explain-error')}
-                          className="text-[10px] text-amber-400 hover:text-amber-300 flex items-center space-x-1"
-                        >
-                          <Sparkles className="w-2.5 h-2.5" />
-                          <span>Explicar erro com Tutor C</span>
-                        </button>
-                      )}
+                      <span className="flex items-center space-x-1">
+                        <AlertCircle className="w-3 h-3 text-amber-400" />
+                        <span>Mensagens do Compilador GCC:</span>
+                      </span>
                     </div>
-                    <pre className="text-slate-300 text-[11px] whitespace-pre-wrap">
+                    <pre className="text-slate-300 text-[11px] whitespace-pre-wrap leading-relaxed">
                       {runResult.compileOutput}
                     </pre>
                   </div>
@@ -244,39 +300,52 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
 
                 {/* Program stdout */}
                 {runResult.stdout && (
-                  <div className="text-slate-100 whitespace-pre-wrap font-mono-code">
+                  <div className="text-emerald-300 whitespace-pre-wrap font-mono text-[12px] bg-slate-950/60 p-2.5 rounded border border-slate-800/40">
                     {runResult.stdout}
                   </div>
                 )}
 
                 {/* Program stderr */}
                 {runResult.stderr && (
-                  <div className="text-rose-400 whitespace-pre-wrap font-mono-code mt-2 border-l-2 border-rose-500 pl-2">
+                  <div className="text-rose-400 whitespace-pre-wrap font-mono text-[12px] bg-rose-950/20 p-2.5 rounded border border-rose-900/50">
                     {runResult.stderr}
                   </div>
                 )}
 
-                {/* Empty Output Note */}
-                {!runResult.stdout && !runResult.stderr && runResult.phase === 'execution' && (
-                  <div className="text-slate-500 italic">
-                    [O programa finalizou com código {runResult.exitCode} sem produzir saída para stdout]
-                  </div>
-                )}
+                {/* Process termination line (Classic OnlineGDB style) */}
+                <div className="text-slate-500 text-[11px] pt-2 border-t border-slate-800/60 font-sans">
+                  --------------------------------
+                  <br />
+                  Process returned {runResult.exitCode ?? 0} (0x{((runResult.exitCode ?? 0) >>> 0).toString(16).toUpperCase()}) &nbsp;
+                  execution time : {formatDuration(runResult.executionTimeMs)}
+                </div>
               </div>
             )}
           </div>
         )}
 
+        {/* AI Diagnosis Tab View */}
+        {activeTab === 'ai' && (
+          <AIDiagnosisPanel
+            diagnosis={diagnosis}
+            isLoading={isLoadingDiagnosis}
+            activeFile={activeFile}
+            onApplyFix={onApplyFix}
+            onJumpToLine={(file, line) => onSelectDiagnosticLine(file || activeFile.name, line || 1)}
+            onRequestReanalysis={onRequestReanalysis}
+          />
+        )}
+
         {/* Stdin Tab View */}
         {activeTab === 'stdin' && (
-          <div className="h-full flex flex-col space-y-2">
+          <div className="p-3 h-full flex flex-col space-y-2">
             <div className="text-xs text-slate-400 font-sans flex items-center justify-between">
               <span>
                 Entrada Padrão (Passada para <code className="text-blue-400 font-mono">scanf()</code>, <code className="text-blue-400 font-mono">fgets()</code>, <code className="text-blue-400 font-mono">getchar()</code>):
               </span>
               <button
                 onClick={() => onStdinChange('')}
-                className="text-[11px] text-slate-500 hover:text-slate-300"
+                className="text-[11px] text-slate-500 hover:text-slate-300 font-sans"
               >
                 Limpar Entrada
               </button>
@@ -285,19 +354,19 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
               value={stdin}
               onChange={(e) => onStdinChange(e.target.value)}
               placeholder="Digite aqui as entradas do seu programa, separadas por espaços ou linhas (ex: 42 100)..."
-              className="w-full flex-1 min-h-[120px] bg-slate-950 border border-slate-800 rounded p-2.5 font-mono text-xs text-slate-200 focus:border-blue-500 outline-none resize-none"
+              className="w-full flex-1 min-h-[140px] bg-slate-950 border border-slate-800 rounded p-2.5 font-mono text-xs text-slate-200 focus:border-blue-500 outline-none resize-none"
             />
             <p className="text-[11px] text-slate-500 font-sans">
-              Dica: Quando o código executar <code className="text-slate-400 font-mono">scanf</code>, os valores inseridos acima serão lidos na ordem informada.
+              Dica: Quando o código executar <code className="text-slate-400 font-mono">scanf("%d", &x)</code>, os valores inseridos acima serão lidos na ordem informada.
             </p>
           </div>
         )}
 
         {/* Diagnostics Tab View */}
         {activeTab === 'diagnostics' && (
-          <div className="space-y-2">
+          <div className="p-3 space-y-2">
             {diagnostics.length === 0 ? (
-              <div className="text-slate-500 py-6 text-center font-sans">
+              <div className="text-slate-500 py-8 text-center font-sans">
                 <p className="text-emerald-400 font-medium">Nenhum aviso ou erro no momento.</p>
                 <p className="text-xs text-slate-600 mt-1">O código compilou limpo sem diagnósticos pendentes.</p>
               </div>
@@ -320,7 +389,9 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
                     )}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center space-x-2 font-mono text-[11px]">
-                        <span className="font-semibold text-slate-200">{diag.file}:{diag.line}{diag.col ? `:${diag.col}` : ''}</span>
+                        <span className="font-semibold text-slate-200">
+                          {diag.file}:{diag.line}{diag.col ? `:${diag.col}` : ''}
+                        </span>
                         <span
                           className={`uppercase text-[10px] px-1 rounded ${
                             diag.type === 'error' ? 'bg-rose-900 text-rose-200' : 'bg-amber-900 text-amber-200'
@@ -340,7 +411,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
 
         {/* Assembly Tab View */}
         {activeTab === 'assembly' && (
-          <div>
+          <div className="p-3">
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs text-slate-400 font-sans">
                 Código Assembly gerado via <code className="text-purple-400 font-mono">gcc -S -fverbose-asm -O2</code>:
@@ -354,7 +425,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
               </button>
             </div>
             {isLoadingAssembly ? (
-              <div className="flex items-center space-x-2 text-purple-400 py-4">
+              <div className="flex items-center space-x-2 text-purple-400 py-4 font-sans">
                 <div className="w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" />
                 <span>Gerando representação x86_64...</span>
               </div>
@@ -363,65 +434,8 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
                 {assemblyCode}
               </pre>
             ) : (
-              <div className="text-slate-500 py-4 font-sans text-center">
+              <div className="text-slate-500 py-8 font-sans text-center">
                 Clique em "Atualizar Assembly" para inspecionar as instruções de máquina x86_64 geradas pelo GCC.
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* AI Tutor Tab View */}
-        {activeTab === 'ai' && (
-          <div className="space-y-3 font-sans">
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                onClick={() => onAskAi('explain-code')}
-                disabled={isLoadingAi}
-                className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs flex items-center space-x-1"
-              >
-                <Sparkles className="w-3 h-3 text-amber-400" />
-                <span>Explicar Código</span>
-              </button>
-              <button
-                onClick={() => onAskAi('explain-error')}
-                disabled={isLoadingAi || (!runResult?.compileOutput && !runResult?.stderr)}
-                className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs flex items-center space-x-1 disabled:opacity-40"
-              >
-                <AlertCircle className="w-3 h-3 text-rose-400" />
-                <span>Explicar Erros Atuais</span>
-              </button>
-              <button
-                onClick={() => onAskAi('optimize')}
-                disabled={isLoadingAi}
-                className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs flex items-center space-x-1"
-              >
-                <Cpu className="w-3 h-3 text-emerald-400" />
-                <span>Sugerir Otimizações</span>
-              </button>
-            </div>
-
-            {isLoadingAi && (
-              <div className="flex items-center space-x-2 text-amber-400 py-3">
-                <div className="w-3 h-3 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
-                <span>Analisando código C...</span>
-              </div>
-            )}
-
-            {aiResponse && (
-              <div className="bg-slate-900/90 border border-slate-800 rounded p-3 text-xs text-slate-200 whitespace-pre-wrap leading-relaxed">
-                {aiResponse}
-              </div>
-            )}
-
-            {!aiResponse && !isLoadingAi && (
-              <div className="text-xs text-slate-400 space-y-2 bg-slate-900/40 p-3 rounded border border-slate-800/60">
-                <p className="font-semibold text-slate-300">Dicas Rápidas de Desenvolvimento em C:</p>
-                <ul className="list-disc pl-4 space-y-1 text-slate-400">
-                  <li><strong className="text-slate-300">Ponteiros:</strong> Use <code className="text-amber-300 font-mono">&variavel</code> para passar o endereço de memória e <code className="text-amber-300 font-mono">*ponteiro</code> para acessar ou alterar o valor apontado.</li>
-                  <li><strong className="text-slate-300">Leitura com scanf:</strong> Sempre passe o endereço de memória da variável para tipos primitivos, por exemplo: <code className="text-amber-300 font-mono">scanf("%d", &num);</code></li>
-                  <li><strong className="text-slate-300">Alocação com malloc:</strong> Lembre-se de verificar se o retorno de <code className="text-amber-300 font-mono">malloc()</code> é diferente de <code className="text-rose-400 font-mono">NULL</code> antes de usar a memória, e libere com <code className="text-amber-300 font-mono">free()</code>.</li>
-                  <li><strong className="text-slate-300">Strings:</strong> Lembre-se que strings em C são vetores de caracteres terminados pelo caractere nulo <code className="text-amber-300 font-mono">'\0'</code>.</li>
-                </ul>
               </div>
             )}
           </div>

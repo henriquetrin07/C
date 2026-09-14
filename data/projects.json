@@ -1,0 +1,36 @@
+[
+  {
+    "id": "p_1789392934098_init",
+    "userId": "u_1789392934096_uxag4",
+    "title": "Meu Primeiro Projeto C",
+    "description": "Projeto inicial de boas-vindas com Olá Mundo e noções básicas",
+    "files": [
+      {
+        "id": "f_main",
+        "name": "main.c",
+        "content": "#include <stdio.h>\n\nint main() {\n    // Bem-vindo ao C Web IDE & Compilador Online!\n    printf(\"Olá, mundo! Minha conta e projetos estão salvos.\\n\");\n    printf(\"Explore a trilha 'Aprenda C do Zero' para ver as lições.\\n\");\n    return 0;\n}\n",
+        "isMain": true
+      }
+    ],
+    "stdin": "",
+    "updatedAt": "2026-09-14T13:35:34.098Z",
+    "createdAt": "2026-09-14T13:35:34.098Z"
+  },
+  {
+    "id": "p_1789392968265_init",
+    "userId": "u_1789392968264_xvg0m",
+    "title": "Meu Primeiro Projeto C",
+    "description": "Projeto inicial de boas-vindas com Olá Mundo e noções básicas",
+    "files": [
+      {
+        "id": "f_main",
+        "name": "main.c",
+        "content": "#include <stdio.h>\n\nint main() {\n    // Bem-vindo ao C Web IDE & Compilador Online!\n    printf(\"Olá, mundo! Minha conta e projetos estão salvos.\\n\");\n    printf(\"Explore a trilha 'Aprenda C do Zero' para ver as lições.\\n\");\n    return 0;\n}\n",
+        "isMain": true
+      }
+    ],
+    "stdin": "",
+    "updatedAt": "2026-09-14T13:36:08.265Z",
+    "createdAt": "2026-09-14T13:36:08.265Z"
+  }
+]

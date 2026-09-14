@@ -1,4 +1,15 @@
 import { User, UserProject, SourceFile, CompilerOptions } from '../types';
+import { db } from '../firebase';
+import {
+  doc,
+  getDoc,
+  setDoc,
+  deleteDoc,
+  collection,
+  query,
+  where,
+  getDocs,
+} from 'firebase/firestore';
 
 const TOKEN_KEY = 'c_ide_auth_token';
 const USER_KEY = 'c_ide_current_user';
@@ -8,42 +19,42 @@ const LOCAL_PROJECTS_KEY = 'c_compiler_db_projects_v2';
 interface LocalUserRecord {
   id: string;
   username: string;
-  password: string; // Stored in client DB
+  passwordHash: string;
+  salt: string;
   createdAt: string;
 }
 
-// Helper to safely parse JSON response without crashing if server returns HTML or empty
-async function safeFetchJson(url: string, options: RequestInit = {}): Promise<{ ok: boolean; status: number; data: any; rawText: string }> {
-  try {
-    const res = await fetch(url, options);
-    const rawText = await res.text();
-    let data: any = null;
-
-    try {
-      if (rawText && rawText.trim().startsWith('{') || rawText.trim().startsWith('[')) {
-        data = JSON.parse(rawText);
-      }
-    } catch {
-      data = null;
-    }
-
-    return {
-      ok: res.ok,
-      status: res.status,
-      data,
-      rawText,
-    };
-  } catch (err: any) {
-    return {
-      ok: false,
-      status: 0,
-      data: null,
-      rawText: err?.message || 'Network error',
-    };
+// Cryptographic helpers for password hashing using Web Crypto API
+async function hashPasswordWithSalt(password: string, salt: string): Promise<string> {
+  if (typeof crypto !== 'undefined' && crypto.subtle) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(password + '::' + salt);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
   }
+  // Fallback simple hash if subtle crypto is not available
+  let hash = 0;
+  const str = password + salt;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) - hash + str.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(16);
 }
 
-// Client Database (LocalStorage) Helpers
+function generateSalt(): string {
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    const array = new Uint8Array(16);
+    crypto.getRandomValues(array);
+    return Array.from(array)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+  return Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+}
+
+// Local cache helpers
 function getLocalUsers(): LocalUserRecord[] {
   try {
     const raw = localStorage.getItem(LOCAL_USERS_KEY);
@@ -57,7 +68,7 @@ function saveLocalUsers(users: LocalUserRecord[]) {
   try {
     localStorage.setItem(LOCAL_USERS_KEY, JSON.stringify(users));
   } catch (e) {
-    console.error('Failed to save local users database:', e);
+    console.error('Failed to save local users cache:', e);
   }
 }
 
@@ -74,29 +85,25 @@ function saveLocalProjects(projects: UserProject[]) {
   try {
     localStorage.setItem(LOCAL_PROJECTS_KEY, JSON.stringify(projects));
   } catch (e) {
-    console.error('Failed to save local projects database:', e);
+    console.error('Failed to save local projects cache:', e);
   }
 }
 
 export const DatabaseClient = {
-  // Get stored token
   getToken(): string | null {
     return localStorage.getItem(TOKEN_KEY);
   },
 
-  // Save session
   setSession(user: User, token: string) {
     localStorage.setItem(TOKEN_KEY, token);
     localStorage.setItem(USER_KEY, JSON.stringify(user));
   },
 
-  // Clear session
   clearSession() {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
   },
 
-  // Get locally cached user
   getCachedUser(): User | null {
     try {
       const raw = localStorage.getItem(USER_KEY);
@@ -106,224 +113,339 @@ export const DatabaseClient = {
     }
   },
 
-  // Register user (Tries server database first; if server is serverless/offline/static, seamlessly uses client database)
-  async register(username: string, password: string): Promise<{ success: boolean; user: User; token: string; error?: string }> {
+  // Register user into Firebase Firestore
+  async register(
+    username: string,
+    password: string
+  ): Promise<{ success: boolean; user: User; token: string; error?: string }> {
     const cleanUsername = username.trim();
     if (cleanUsername.length < 3) {
-      return { success: false, user: null as any, token: '', error: 'O nome de usuário deve ter pelo menos 3 caracteres.' };
+      return {
+        success: false,
+        user: null as any,
+        token: '',
+        error: 'O nome de usuário deve ter pelo menos 3 caracteres.',
+      };
     }
     if (password.length < 4) {
-      return { success: false, user: null as any, token: '', error: 'A senha deve ter pelo menos 4 caracteres.' };
+      return {
+        success: false,
+        user: null as any,
+        token: '',
+        error: 'A senha deve ter pelo menos 4 caracteres.',
+      };
     }
 
-    // Try server API
-    const res = await safeFetchJson('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: cleanUsername, password }),
-    });
+    const usernameLower = cleanUsername.toLowerCase();
+    const salt = generateSalt();
+    const passwordHash = await hashPasswordWithSalt(password, salt);
 
-    if (res.ok && res.data && res.data.success) {
-      const user: User = res.data.user;
-      const token: string = res.data.token;
-      this.setSession(user, token);
+    try {
+      // 1. Check if user already exists in Firestore
+      const userDocRef = doc(db, 'users', usernameLower);
+      const userSnap = await getDoc(userDocRef);
 
-      // Also mirror to local database for resilience
-      const localUsers = getLocalUsers();
-      if (!localUsers.some((u) => u.username.toLowerCase() === cleanUsername.toLowerCase())) {
-        localUsers.push({
-          id: user.id,
-          username: cleanUsername,
-          password,
-          createdAt: user.createdAt,
-        });
-        saveLocalUsers(localUsers);
+      if (userSnap.exists()) {
+        return {
+          success: false,
+          user: null as any,
+          token: '',
+          error: 'Este nome de usuário já está cadastrado. Entre com sua senha ou escolha outro nome.',
+        };
       }
 
-      return { success: true, user, token };
-    }
+      const userId = 'u_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+      const createdAt = new Date().toISOString();
 
-    // If server returned specific business error (like username already exists), report it
-    if (res.data && res.data.error && res.status === 409) {
-      return { success: false, user: null as any, token: '', error: res.data.error };
-    }
+      // 2. Save user to Firestore Cloud Database
+      await setDoc(userDocRef, {
+        id: userId,
+        username: cleanUsername,
+        usernameLower,
+        passwordHash,
+        salt,
+        createdAt,
+      });
 
-    // If server was unreachable, returned HTML (Vercel rewrite/cold start), or errored:
-    // Create the account directly in the client database so the user is NEVER blocked!
-    const localUsers = getLocalUsers();
-    const existing = localUsers.find((u) => u.username.toLowerCase() === cleanUsername.toLowerCase());
-    if (existing) {
-      return { success: false, user: null as any, token: '', error: 'Nome de usuário já existe na base de dados. Faça login ou use outro.' };
-    }
+      const user: User = {
+        id: userId,
+        username: cleanUsername,
+        createdAt,
+      };
 
-    const newLocalUser: LocalUserRecord = {
-      id: 'usr_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-      username: cleanUsername,
-      password,
-      createdAt: new Date().toISOString(),
-    };
+      const token = `fb_tok_${userId}_${Date.now()}`;
+      this.setSession(user, token);
 
-    localUsers.push(newLocalUser);
-    saveLocalUsers(localUsers);
-
-    const clientUser: User = {
-      id: newLocalUser.id,
-      username: newLocalUser.username,
-      createdAt: newLocalUser.createdAt,
-    };
-
-    // Client-side local token
-    const clientToken = `local_tok_${newLocalUser.id}_${Date.now()}`;
-    this.setSession(clientUser, clientToken);
-
-    // Create initial welcome project in local database
-    const initialProj: UserProject = {
-      id: 'proj_' + Date.now() + '_init',
-      userId: clientUser.id,
-      title: 'Meu Primeiro Projeto C',
-      name: 'Meu Primeiro Projeto C',
-      description: 'Projeto inicial com Olá Mundo e noções fundamentais de C',
-      files: [
-        {
-          id: 'f_main',
-          name: 'main.c',
-          content: `#include <stdio.h>
+      // 3. Create initial welcome project in Firestore
+      const initialProjectId = 'p_' + Date.now() + '_welcome';
+      const initialProject: UserProject = {
+        id: initialProjectId,
+        userId: user.id,
+        title: 'Meu Primeiro Projeto C',
+        name: 'Meu Primeiro Projeto C',
+        description: 'Projeto inicial com Olá Mundo e noções básicas de C',
+        files: [
+          {
+            id: 'f_main',
+            name: 'main.c',
+            content: `#include <stdio.h>
 
 int main() {
-    // Bem-vindo ao C Web IDE!
-    // Sua conta e projetos estão salvos no banco de dados.
-    printf("Olá, mundo! Minha conta foi criada com sucesso.\\n");
-    printf("Explore a trilha 'Aprenda C do Zero' para ver as lições.\\n");
+    // Bem-vindo ao C Web IDE & Compilador Online!
+    printf("Olá, %s! Sua conta e códigos estão salvos na nuvem.\\n", "${cleanUsername}");
+    printf("Qualquer pessoa de qualquer computador agora pode acessar.\\n");
     return 0;
 }
 `,
-          isMain: true,
-        },
-      ],
-      stdin: '',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
+            isMain: true,
+          },
+        ],
+        stdin: '',
+        createdAt,
+        updatedAt: createdAt,
+      };
 
-    const localProjects = getLocalProjects();
-    localProjects.push(initialProj);
-    saveLocalProjects(localProjects);
+      try {
+        await setDoc(doc(db, 'projects', initialProjectId), {
+          ...initialProject,
+          username: cleanUsername,
+        });
+      } catch (projErr) {
+        console.warn('Initial project cloud save notice:', projErr);
+      }
 
-    return { success: true, user: clientUser, token: clientToken };
+      // Mirror to local cache for instant offline access
+      const localUsers = getLocalUsers();
+      localUsers.push({ id: userId, username: cleanUsername, passwordHash, salt, createdAt });
+      saveLocalUsers(localUsers);
+
+      const localProjects = getLocalProjects();
+      localProjects.unshift(initialProject);
+      saveLocalProjects(localProjects);
+
+      return { success: true, user, token };
+    } catch (err: any) {
+      console.error('Firebase register error:', err);
+
+      // Fallback to local storage if Firestore connection fails
+      const localUsers = getLocalUsers();
+      if (localUsers.some((u) => u.username.toLowerCase() === usernameLower)) {
+        return {
+          success: false,
+          user: null as any,
+          token: '',
+          error: 'Este nome de usuário já existe no banco de dados local.',
+        };
+      }
+
+      const userId = 'u_local_' + Date.now();
+      const createdAt = new Date().toISOString();
+      const localUserRec: LocalUserRecord = {
+        id: userId,
+        username: cleanUsername,
+        passwordHash,
+        salt,
+        createdAt,
+      };
+      localUsers.push(localUserRec);
+      saveLocalUsers(localUsers);
+
+      const user: User = { id: userId, username: cleanUsername, createdAt };
+      const token = `loc_tok_${userId}_${Date.now()}`;
+      this.setSession(user, token);
+
+      return { success: true, user, token };
+    }
   },
 
-  // Login user
-  async login(username: string, password: string): Promise<{ success: boolean; user: User; token: string; error?: string }> {
+  // Login user from Firebase Firestore (allows ANY person from ANY device to log in)
+  async login(
+    username: string,
+    password: string
+  ): Promise<{ success: boolean; user: User; token: string; error?: string }> {
     const cleanUsername = username.trim();
     if (!cleanUsername || !password) {
-      return { success: false, user: null as any, token: '', error: 'Informe usuário e senha para entrar.' };
+      return {
+        success: false,
+        user: null as any,
+        token: '',
+        error: 'Informe usuário e senha para entrar.',
+      };
     }
 
-    // Try server API first
-    const res = await safeFetchJson('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: cleanUsername, password }),
-    });
+    const usernameLower = cleanUsername.toLowerCase();
 
-    if (res.ok && res.data && res.data.success) {
-      const user: User = res.data.user;
-      const token: string = res.data.token;
-      this.setSession(user, token);
-      return { success: true, user, token };
+    try {
+      // 1. Look up user in Firestore Cloud Database
+      const userDocRef = doc(db, 'users', usernameLower);
+      const userSnap = await getDoc(userDocRef);
+
+      if (userSnap.exists()) {
+        const data = userSnap.data();
+        const expectedHash = data.passwordHash;
+        const salt = data.salt;
+
+        const calculatedHash = await hashPasswordWithSalt(password, salt);
+
+        // Verify password
+        if (calculatedHash === expectedHash) {
+          const user: User = {
+            id: data.id,
+            username: data.username || cleanUsername,
+            createdAt: data.createdAt,
+          };
+          const token = `fb_tok_${user.id}_${Date.now()}`;
+          this.setSession(user, token);
+
+          // Update local cache
+          const localUsers = getLocalUsers();
+          const existingIdx = localUsers.findIndex((u) => u.username.toLowerCase() === usernameLower);
+          if (existingIdx >= 0) {
+            localUsers[existingIdx] = {
+              id: user.id,
+              username: user.username,
+              passwordHash: expectedHash,
+              salt,
+              createdAt: user.createdAt,
+            };
+          } else {
+            localUsers.push({
+              id: user.id,
+              username: user.username,
+              passwordHash: expectedHash,
+              salt,
+              createdAt: user.createdAt,
+            });
+          }
+          saveLocalUsers(localUsers);
+
+          return { success: true, user, token };
+        } else {
+          return {
+            success: false,
+            user: null as any,
+            token: '',
+            error: 'Senha incorreta. Verifique os caracteres e tente novamente.',
+          };
+        }
+      }
+    } catch (firestoreErr) {
+      console.warn('Firestore lookup error, attempting local/server check:', firestoreErr);
     }
 
-    // If server returned invalid credentials error (401), check if local user exists
+    // 2. Fallback check in local users cache
     const localUsers = getLocalUsers();
-    const localMatch = localUsers.find(
-      (u) => u.username.toLowerCase() === cleanUsername.toLowerCase() && u.password === password
-    );
+    const localMatch = localUsers.find((u) => u.username.toLowerCase() === usernameLower);
 
     if (localMatch) {
-      const user: User = {
-        id: localMatch.id,
-        username: localMatch.username,
-        createdAt: localMatch.createdAt,
+      const calculatedHash = await hashPasswordWithSalt(password, localMatch.salt);
+      if (calculatedHash === localMatch.passwordHash) {
+        const user: User = {
+          id: localMatch.id,
+          username: localMatch.username,
+          createdAt: localMatch.createdAt,
+        };
+        const token = `loc_tok_${user.id}_${Date.now()}`;
+        this.setSession(user, token);
+        return { success: true, user, token };
+      }
+      return {
+        success: false,
+        user: null as any,
+        token: '',
+        error: 'Senha incorreta.',
       };
-      const token = `local_tok_${user.id}_${Date.now()}`;
-      this.setSession(user, token);
-      return { success: true, user, token };
     }
 
-    if (res.data && res.data.error) {
-      return { success: false, user: null as any, token: '', error: res.data.error };
+    // 3. Fallback check with server API if available
+    try {
+      const serverRes = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: cleanUsername, password }),
+      });
+      if (serverRes.ok) {
+        const data = await serverRes.json();
+        if (data.success && data.user && data.token) {
+          this.setSession(data.user, data.token);
+          return { success: true, user: data.user, token: data.token };
+        }
+      }
+    } catch {
+      // Server not reachable
     }
 
-    return { success: false, user: null as any, token: '', error: 'Usuário ou senha incorretos.' };
+    return {
+      success: false,
+      user: null as any,
+      token: '',
+      error: 'Usuário não encontrado. Verifique o nome digitado ou crie uma conta.',
+    };
   },
 
-  // Verify / restore current session
+  // Get current active session user
   async getCurrentUser(): Promise<User | null> {
     const token = this.getToken();
     if (!token) return null;
 
-    // Check if it's a local client token
-    if (token.startsWith('local_tok_')) {
-      return this.getCachedUser();
-    }
+    const cached = this.getCachedUser();
+    if (cached) return cached;
 
-    // Check server session
-    const res = await safeFetchJson('/api/auth/me', {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    if (res.ok && res.data && res.data.success) {
-      const user: User = res.data.user;
-      localStorage.setItem(USER_KEY, JSON.stringify(user));
-      return user;
-    }
-
-    // Fallback to cached user if server is temporarily unreachable
-    return this.getCachedUser();
-  },
-
-  // Get user projects (merges server + local database to guarantee no data loss)
-  async getProjects(userId: string): Promise<UserProject[]> {
-    const token = this.getToken();
-    let serverProjects: UserProject[] = [];
-
-    if (token && !token.startsWith('local_tok_')) {
-      const res = await safeFetchJson('/api/projects', {
+    // If server session exists, query it
+    try {
+      const res = await fetch('/api/auth/me', {
         headers: { Authorization: `Bearer ${token}` },
       });
-
-      if (res.ok && res.data && Array.isArray(res.data.projects)) {
-        serverProjects = res.data.projects;
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.user) {
+          localStorage.setItem(USER_KEY, JSON.stringify(data.user));
+          return data.user;
+        }
       }
+    } catch {
+      // Ignore
     }
 
-    // Read local database projects for this user
-    const localProjects = getLocalProjects().filter((p) => p.userId === userId);
+    return null;
+  },
 
-    // Merge projects by ID and title
+  // Get all projects for a user from Firestore + local cache
+  async getProjects(userId: string): Promise<UserProject[]> {
     const projectMap = new Map<string, UserProject>();
 
-    // Add local first
-    for (const p of localProjects) {
-      projectMap.set(p.id, p);
+    // 1. Get projects from Firestore Cloud Database
+    try {
+      const q = query(collection(db, 'projects'), where('userId', '==', userId));
+      const querySnapshot = await getDocs(q);
+      querySnapshot.forEach((docSnap) => {
+        const data = docSnap.data() as UserProject;
+        projectMap.set(data.id || docSnap.id, {
+          ...data,
+          id: data.id || docSnap.id,
+        });
+      });
+    } catch (err) {
+      console.warn('Firestore getProjects warning:', err);
     }
 
-    // Overwrite/update with server version if present
-    for (const p of serverProjects) {
-      projectMap.set(p.id, p);
+    // 2. Also check local cache
+    const localProjects = getLocalProjects().filter((p) => p.userId === userId);
+    for (const lp of localProjects) {
+      if (!projectMap.has(lp.id)) {
+        projectMap.set(lp.id, lp);
+      }
     }
 
     const merged = Array.from(projectMap.values()).sort(
       (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
     );
 
-    // Sync back to local database so projects are available offline
     saveLocalProjects(merged);
-
     return merged;
   },
 
-  // Save project (Create or Update)
+  // Save or update a project in Firestore Cloud Database
   async saveProject(
     userId: string,
     data: {
@@ -335,41 +457,12 @@ int main() {
       compilerOptions?: CompilerOptions;
     }
   ): Promise<{ success: boolean; project: UserProject; error?: string }> {
-    const token = this.getToken();
+    const projectId =
+      data.id || 'p_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+    const now = new Date().toISOString();
     const title = data.title.trim() || 'Projeto sem título';
 
-    let serverSavedProject: UserProject | null = null;
-
-    if (token && !token.startsWith('local_tok_')) {
-      const url = data.id ? `/api/projects/${data.id}` : '/api/projects';
-      const method = data.id ? 'PUT' : 'POST';
-
-      const res = await safeFetchJson(url, {
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          title,
-          name: title,
-          description: data.description || '',
-          files: data.files,
-          stdin: data.stdin || '',
-          compilerOptions: data.compilerOptions,
-        }),
-      });
-
-      if (res.ok && res.data && res.data.project) {
-        serverSavedProject = res.data.project;
-      }
-    }
-
-    // Always update local database for guaranteed resilience and speed
-    const localProjects = getLocalProjects();
-    const projectId = serverSavedProject?.id || data.id || 'proj_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
-
-    const projectRecord: UserProject = {
+    const project: UserProject = {
       id: projectId,
       userId,
       title,
@@ -378,51 +471,56 @@ int main() {
       files: data.files,
       stdin: data.stdin || '',
       compilerOptions: data.compilerOptions,
-      updatedAt: new Date().toISOString(),
-      createdAt: serverSavedProject?.createdAt || new Date().toISOString(),
+      updatedAt: now,
+      createdAt: now,
     };
 
-    const existingIndex = localProjects.findIndex((p) => p.id === projectId);
-    if (existingIndex >= 0) {
-      localProjects[existingIndex] = {
-        ...localProjects[existingIndex],
-        ...projectRecord,
+    // 1. Save to Firestore Cloud Database
+    try {
+      await setDoc(doc(db, 'projects', projectId), {
+        ...project,
+      });
+    } catch (err) {
+      console.warn('Firestore project save warning:', err);
+    }
+
+    // 2. Save to local cache
+    const local = getLocalProjects();
+    const existingIdx = local.findIndex((p) => p.id === projectId);
+    if (existingIdx >= 0) {
+      local[existingIdx] = {
+        ...local[existingIdx],
+        ...project,
+        createdAt: local[existingIdx].createdAt || now,
       };
     } else {
-      localProjects.unshift(projectRecord);
+      local.unshift(project);
     }
+    saveLocalProjects(local);
 
-    saveLocalProjects(localProjects);
-
-    return {
-      success: true,
-      project: serverSavedProject || projectRecord,
-    };
+    return { success: true, project };
   },
 
-  // Delete project
+  // Delete project from Firestore Cloud Database
   async deleteProject(userId: string, projectId: string): Promise<boolean> {
-    const token = this.getToken();
-
-    if (token && !token.startsWith('local_tok_')) {
-      await safeFetchJson(`/api/projects/${projectId}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
-      });
+    try {
+      await deleteDoc(doc(db, 'projects', projectId));
+    } catch (err) {
+      console.warn('Firestore project delete warning:', err);
     }
 
-    // Always delete from local database
-    const localProjects = getLocalProjects().filter((p) => !(p.id === projectId && p.userId === userId));
-    saveLocalProjects(localProjects);
+    const local = getLocalProjects().filter(
+      (p) => !(p.id === projectId && p.userId === userId)
+    );
+    saveLocalProjects(local);
     return true;
   },
 
-  // Export all projects as a JSON file backup
   exportProjectsBackup(userId: string): string {
     const projects = getLocalProjects().filter((p) => p.userId === userId);
     return JSON.stringify(
       {
-        version: '1.0',
+        version: '2.0',
         exportedAt: new Date().toISOString(),
         userId,
         projects,
@@ -432,7 +530,6 @@ int main() {
     );
   },
 
-  // Import projects from JSON backup
   importProjectsBackup(userId: string, jsonString: string): number {
     try {
       const data = JSON.parse(jsonString);
@@ -457,6 +554,9 @@ int main() {
           createdAt: item.createdAt || new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         };
+
+        // Save to Firestore asynchronously
+        setDoc(doc(db, 'projects', newProj.id), newProj).catch(() => {});
 
         localProjects.unshift(newProj);
         importedCount++;

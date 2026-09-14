@@ -1,0 +1,30 @@
+{
+  "entities": {
+    "User": {
+      "collection": "users",
+      "fields": {
+        "id": { "type": "string", "description": "Unique user ID" },
+        "username": { "type": "string", "description": "User display username" },
+        "usernameLower": { "type": "string", "description": "Lowercase username for lookup" },
+        "passwordHash": { "type": "string", "description": "Password hash" },
+        "salt": { "type": "string", "description": "Cryptographic salt" },
+        "createdAt": { "type": "string", "description": "Creation timestamp" }
+      }
+    },
+    "Project": {
+      "collection": "projects",
+      "fields": {
+        "id": { "type": "string", "description": "Unique project ID" },
+        "userId": { "type": "string", "description": "User ID that owns this project" },
+        "username": { "type": "string", "description": "Username of project owner" },
+        "title": { "type": "string", "description": "Project title" },
+        "description": { "type": "string", "description": "Project description" },
+        "files": { "type": "array", "description": "Source files list" },
+        "stdin": { "type": "string", "description": "Stdin input" },
+        "compilerOptions": { "type": "object", "description": "Compiler flags and options" },
+        "updatedAt": { "type": "string", "description": "Update timestamp" },
+        "createdAt": { "type": "string", "description": "Creation timestamp" }
+      }
+    }
+  }
+}

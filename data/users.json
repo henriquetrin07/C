@@ -1,0 +1,16 @@
+[
+  {
+    "id": "u_1789392934096_uxag4",
+    "username": "teste123",
+    "passwordHash": "4a4f198e1ab6af457df1c7ec27e9414d3acee7fe8860eb7d55f1a22bd8f68479",
+    "salt": "bf2673135f51ee544423d1b9e94e272d",
+    "createdAt": "2026-09-14T13:35:34.096Z"
+  },
+  {
+    "id": "u_1789392968264_xvg0m",
+    "username": "Gabriel",
+    "passwordHash": "55ed0bca8ca2bc1740558a635abfcdf513201c84f4d4e8a64fc2350d3396fac6",
+    "salt": "20821a86032f4be96c7c54667c40ddf1",
+    "createdAt": "2026-09-14T13:36:08.264Z"
+  }
+]

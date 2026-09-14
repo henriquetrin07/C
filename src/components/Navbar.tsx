@@ -15,8 +15,12 @@ import {
   Wand2,
   AlertTriangle,
   Keyboard,
+  GraduationCap,
+  FolderGit2,
+  User,
+  LogIn,
 } from 'lucide-react';
-import { CompilerOptions } from '../types';
+import { CompilerOptions, User as UserType } from '../types';
 
 interface NavbarProps {
   isRunning: boolean;
@@ -32,6 +36,10 @@ interface NavbarProps {
   onOpenAiAssist: () => void;
   onDownloadProject: () => void;
   onToggleStdin: () => void;
+  onOpenCurriculum: () => void;
+  onOpenProjects: () => void;
+  onOpenAuth: () => void;
+  currentUser: UserType | null;
   compilerOptions: CompilerOptions;
   onChangeStandard: (std: 'c89' | 'c99' | 'c11' | 'c17') => void;
   engineMode: 'native' | 'cloud';
@@ -52,6 +60,10 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenAiAssist,
   onDownloadProject,
   onToggleStdin,
+  onOpenCurriculum,
+  onOpenProjects,
+  onOpenAuth,
+  currentUser,
   compilerOptions,
   onChangeStandard,
   engineMode,
@@ -59,7 +71,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 }) => {
   return (
     <header className="bg-[#121824] border-b border-slate-800/90 text-white px-3 py-2 flex flex-wrap items-center justify-between gap-2 select-none">
-      {/* Left side: Brand + Engine status */}
+      {/* Left side: Brand + Educational Course Button + Engine status */}
       <div className="flex items-center space-x-3">
         <div className="flex items-center space-x-2">
           <div className="w-8 h-8 rounded bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center font-black text-lg text-white shadow-md shadow-blue-500/20 border border-blue-400/30">
@@ -75,10 +87,24 @@ export const Navbar: React.FC<NavbarProps> = ({
               </span>
             </div>
             <p className="text-[10px] text-slate-400 hidden xl:block">
-              Compilador C com IA para Diagnóstico & Correção
+              Compilador C com IA para Diagnóstico, Ensino & Projetos
             </p>
           </div>
         </div>
+
+        {/* Aprenda C do Zero Button */}
+        <button
+          id="btn-open-curriculum"
+          onClick={onOpenCurriculum}
+          className="flex items-center space-x-1.5 px-2.5 py-1 rounded-md bg-gradient-to-r from-amber-600/30 to-amber-700/20 hover:from-amber-600/40 hover:to-amber-700/30 border border-amber-500/40 text-amber-300 text-xs font-semibold transition-all shadow-xs"
+          title="Abrir Curso Didático: Aprenda C do Zero (10 Módulos + Desafios + Cheat Sheets)"
+        >
+          <GraduationCap className="w-4 h-4 text-amber-400" />
+          <span className="font-sans">Aprenda C</span>
+          <span className="text-[10px] bg-amber-500/20 text-amber-200 px-1 rounded hidden sm:inline">
+            10 Módulos
+          </span>
+        </button>
 
         {/* Server / Cloud Status Pill */}
         <div className="hidden lg:flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] bg-slate-800/80 border border-slate-700/60 text-slate-300">
@@ -171,21 +197,21 @@ export const Navbar: React.FC<NavbarProps> = ({
               ? 'bg-rose-950/80 hover:bg-rose-900 text-rose-200 border-rose-700 shadow-md shadow-rose-900/30 animate-pulse'
               : 'bg-slate-800 hover:bg-slate-700 text-amber-300 border-slate-700'
           }`}
-          title="Ver Diagnóstico e Correção da IA"
+          title="Ver Diagnóstico Pedagógico e Correção da IA"
         >
           {hasErrors ? (
             <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
           ) : (
             <Sparkles className="w-3.5 h-3.5 text-amber-400" />
           )}
-          <span>Diagnóstico IA</span>
+          <span>Tutor IA</span>
           {hasErrors && (
             <span className="w-2 h-2 rounded-full bg-rose-400 animate-ping" />
           )}
         </button>
       </div>
 
-      {/* Right side: Language Selector (OnlineGDB style) & Project actions */}
+      {/* Right side: Language Selector, Projects, Auth, and Tools */}
       <div className="flex items-center space-x-1.5">
         {/* Language selector dropdown */}
         <div className="flex items-center space-x-1 bg-slate-800/90 border border-slate-700/80 rounded-md px-2 py-1 text-xs text-slate-300">
@@ -202,6 +228,41 @@ export const Navbar: React.FC<NavbarProps> = ({
             <option value="c89" className="bg-slate-900 text-slate-200">C (ANSI C89)</option>
           </select>
         </div>
+
+        {/* Projects Button */}
+        <button
+          id="btn-open-projects"
+          onClick={onOpenProjects}
+          className="flex items-center space-x-1 px-2.5 py-1 rounded-md text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-colors"
+          title="Gerenciar e salvar projetos de código C"
+        >
+          <FolderGit2 className="w-3.5 h-3.5 text-indigo-400" />
+          <span className="hidden sm:inline">Projetos</span>
+        </button>
+
+        {/* Auth / Account Button */}
+        <button
+          id="btn-open-auth"
+          onClick={onOpenAuth}
+          className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-md text-xs font-semibold transition-colors border ${
+            currentUser
+              ? 'bg-emerald-950/70 border-emerald-800/70 text-emerald-300 hover:bg-emerald-900'
+              : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white'
+          }`}
+          title={currentUser ? `Conectado como ${currentUser.username}` : 'Entrar / Criar Conta para salvar códigos'}
+        >
+          {currentUser ? (
+            <>
+              <span className="w-2 h-2 rounded-full bg-emerald-400" />
+              <span className="max-w-[80px] truncate">{currentUser.username}</span>
+            </>
+          ) : (
+            <>
+              <LogIn className="w-3.5 h-3.5 text-slate-400" />
+              <span>Entrar</span>
+            </>
+          )}
+        </button>
 
         {/* Stdin button */}
         <button
@@ -275,4 +336,3 @@ export const Navbar: React.FC<NavbarProps> = ({
     </header>
   );
 };
-

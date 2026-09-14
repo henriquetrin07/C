@@ -58,10 +58,65 @@ export interface AIDiagnosis {
   whatWentWrong: string;
   whyItHappened: string;
   howToFix: string;
+  educationalLesson?: string;
+  mentalModel?: string;
+  goldenRule?: string;
+  miniQuiz?: {
+    question: string;
+    options: string[];
+    correctIndex: number;
+    explanation: string;
+  };
   originalSnippet?: string;
   fixedSnippet?: string;
   fullFixedCode?: string;
   category: 'syntax' | 'type_mismatch' | 'memory' | 'include' | 'runtime' | 'logic' | 'warning' | 'general';
   source: 'gemini' | 'heuristic';
+}
+
+export interface User {
+  id: string;
+  username: string;
+  createdAt: string;
+}
+
+export interface UserProject {
+  id: string;
+  userId: string;
+  title: string;
+  name?: string;
+  description?: string;
+  files: SourceFile[];
+  stdin?: string;
+  compilerOptions?: CompilerOptions;
+  updatedAt: string;
+  createdAt: string;
+}
+
+export interface CurriculumLesson {
+  id: string;
+  moduleNumber: number;
+  title: string;
+  subtitle: string;
+  durationMinutes: number;
+  summary: string;
+  theory: string[];
+  analogies: string[];
+  codeExample: {
+    fileName: string;
+    code: string;
+    explanation: string;
+    suggestedStdin?: string;
+  };
+  challenge: {
+    title: string;
+    description: string;
+    starterCode: string;
+    hint: string;
+    solutionCode: string;
+    expectedOutput: string;
+    suggestedStdin?: string;
+  };
+  keyTakeaways: string[];
 }
 

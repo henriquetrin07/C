@@ -6,9 +6,20 @@ import { TerminalPanel } from './components/TerminalPanel';
 import { CompilerSettingsModal } from './components/CompilerSettingsModal';
 import { ExamplesModal } from './components/ExamplesModal';
 import { AssemblyModal } from './components/AssemblyModal';
-import { SourceFile, CompilerOptions, RunResult, ExampleTemplate, AIDiagnosis } from './types';
+import { AuthModal } from './components/AuthModal';
+import { ProjectManagerModal } from './components/ProjectManagerModal';
+import { CurriculumModal } from './components/CurriculumModal';
+import {
+  SourceFile,
+  CompilerOptions,
+  RunResult,
+  ExampleTemplate,
+  AIDiagnosis,
+  User,
+  UserProject,
+} from './types';
 import { EXAMPLES } from './data/examples';
-import { Columns, Rows, Check, AlertCircle } from 'lucide-react';
+import { Columns, Rows, Check, GraduationCap, Sparkles, FolderGit2 } from 'lucide-react';
 import { formatCCode } from './utils/cFormatter';
 import { analyzeErrorWithAI } from './utils/aiDiagnostician';
 import {
@@ -21,6 +32,7 @@ import {
 const STORAGE_KEY_FILES = 'c_ide_files_v1';
 const STORAGE_KEY_OPTIONS = 'c_ide_options_v1';
 const STORAGE_KEY_STDIN = 'c_ide_stdin_v1';
+const STORAGE_KEY_TOKEN = 'c_ide_auth_token';
 
 const DEFAULT_OPTIONS: CompilerOptions = {
   compiler: 'gcc',
@@ -82,10 +94,19 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
+  // Auth and User State
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [authToken, setAuthToken] = useState<string | null>(() => {
+    return localStorage.getItem(STORAGE_KEY_TOKEN);
+  });
+
   // Modals state
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isExamplesOpen, setIsExamplesOpen] = useState(false);
   const [isAssemblyOpen, setIsAssemblyOpen] = useState(false);
+  const [isAuthOpen, setIsAuthOpen] = useState(false);
+  const [isProjectsOpen, setIsProjectsOpen] = useState(false);
+  const [isCurriculumOpen, setIsCurriculumOpen] = useState(false);
 
   // Assembly state
   const [assemblyCode, setAssemblyCode] = useState<string | null>(null);
@@ -109,6 +130,33 @@ export default function App() {
       localStorage.setItem(STORAGE_KEY_STDIN, stdin);
     } catch {}
   }, [stdin]);
+
+  // Check user session on startup
+  useEffect(() => {
+    const checkSession = async () => {
+      const token = localStorage.getItem(STORAGE_KEY_TOKEN);
+      if (!token) return;
+      try {
+        const res = await fetch('/api/auth/me', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setCurrentUser(data.user);
+          setAuthToken(token);
+        } else {
+          // Token invalid or expired
+          localStorage.removeItem(STORAGE_KEY_TOKEN);
+          setAuthToken(null);
+          setCurrentUser(null);
+        }
+      } catch {
+        // Backend might be warming up
+      }
+    };
+
+    checkSession();
+  }, []);
 
   // Check health and server readiness
   useEffect(() => {
@@ -141,8 +189,8 @@ export default function App() {
       id: 'f_' + Date.now(),
       name,
       content: name.endsWith('.h')
-        ? `#ifndef ${name.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase()}\n#define ${name.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase()}\n\n// Definições de cabeçalho\n\n#endif\n`
-        : `#include <stdio.h>\n\n// Funções auxiliares para ${name}\n`,
+        ? `#ifndef ${name.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase()}\n#define ${name.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase()}\n\n// Definições de cabeçalho para ${name}\n\n#endif\n`
+        : `#include <stdio.h>\n\n// Funções para ${name}\n`,
     };
     setFiles((prev) => [...prev, newFile]);
     setActiveFileId(newFile.id);
@@ -184,12 +232,17 @@ export default function App() {
       setRunResult(result);
 
       // If compilation failed or runtime error occurred, automatically diagnose with AI
-      const hasError = !result.success || (result.exitCode !== 0 && result.exitCode !== null) || result.timedOut;
+      const hasError =
+        !result.success ||
+        (result.exitCode !== 0 && result.exitCode !== null) ||
+        result.timedOut;
+
       if (hasError) {
         setIsLoadingDiagnosis(true);
         // Highlight first error line in editor
         if (result.diagnostics.length > 0) {
-          const firstErr = result.diagnostics.find((d) => d.type === 'error') || result.diagnostics[0];
+          const firstErr =
+            result.diagnostics.find((d) => d.type === 'error') || result.diagnostics[0];
           const targetFile = files.find((f) => f.name === firstErr.file);
           if (targetFile) {
             setActiveFileId(targetFile.id);
@@ -264,7 +317,7 @@ export default function App() {
     setFiles((prev) =>
       prev.map((f) => (f.name === targetName ? { ...f, content: fixedCode } : f))
     );
-    showToast(`Correção da IA aplicada em ${targetName}! Pressione F9 para rodar.`);
+    showToast(`Correção pedagógica aplicada em ${targetName}! Pressione F9 para compilar.`);
   };
 
   // Re-run AI analysis with custom question
@@ -368,9 +421,66 @@ export default function App() {
     setHighlightedLine(line);
   };
 
+  // Auth Callbacks
+  const handleLoginSuccess = (user: User, token: string) => {
+    setCurrentUser(user);
+    setAuthToken(token);
+    showToast(`Bem-vindo, ${user.username}! Seus códigos estão salvos na sua conta.`);
+  };
+
+  const handleLogout = () => {
+    setCurrentUser(null);
+    setAuthToken(null);
+    showToast('Você saiu da sua conta. Seus códigos permanecem no navegador.', 'info');
+  };
+
+  // Load User Project
+  const handleLoadProject = (project: UserProject) => {
+    if (project.files && project.files.length > 0) {
+      setFiles(project.files);
+      setActiveFileId(project.files[0].id);
+      setRunResult(null);
+      setHighlightedLine(null);
+      setDiagnosis(null);
+      const projTitle = project.title || project.name || 'Projeto';
+      showToast(`Projeto "${projTitle}" carregado com sucesso!`);
+    }
+  };
+
+  // Load Lesson Code from Curriculum
+  const handleLoadLessonCode = (code: string, fileName: string, suggestedStdin?: string) => {
+    const existingFile = files.find((f) => f.name === fileName);
+    if (existingFile) {
+      setFiles((prev) =>
+        prev.map((f) => (f.id === existingFile.id ? { ...f, content: code } : f))
+      );
+      setActiveFileId(existingFile.id);
+    } else {
+      const newFile: SourceFile = {
+        id: 'lesson_' + Date.now(),
+        name: fileName,
+        content: code,
+      };
+      setFiles((prev) => [newFile, ...prev]);
+      setActiveFileId(newFile.id);
+    }
+
+    if (suggestedStdin !== undefined) {
+      setStdin(suggestedStdin);
+    }
+
+    setRunResult(null);
+    setHighlightedLine(null);
+    setDiagnosis(null);
+    setTerminalTab('output');
+    showToast(`Aula "${fileName}" carregada no editor! Pressione Run (F9) para compilar.`);
+  };
+
   const hasActiveErrors =
-    Boolean(runResult && (!runResult.success || (runResult.exitCode !== 0 && runResult.exitCode !== null))) ||
-    Boolean(diagnosis?.hasError);
+    Boolean(
+      runResult &&
+        (!runResult.success || (runResult.exitCode !== 0 && runResult.exitCode !== null))
+    ) || Boolean(diagnosis?.hasError);
 
   return (
     <div className="flex flex-col h-screen w-screen bg-[#0d1117] text-slate-100 overflow-hidden font-sans select-none">
@@ -405,6 +515,10 @@ export default function App() {
         }}
         onDownloadProject={handleDownloadProject}
         onToggleStdin={() => setTerminalTab(terminalTab === 'stdin' ? 'output' : 'stdin')}
+        onOpenCurriculum={() => setIsCurriculumOpen(true)}
+        onOpenProjects={() => setIsProjectsOpen(true)}
+        onOpenAuth={() => setIsAuthOpen(true)}
+        currentUser={currentUser}
         compilerOptions={compilerOptions}
         onChangeStandard={(std) => setCompilerOptions((prev) => ({ ...prev, standard: std }))}
         engineMode={engineMode}
@@ -430,12 +544,27 @@ export default function App() {
             />
           </div>
 
+          {/* Quick Learning Banner Trigger */}
+          <button
+            onClick={() => setIsCurriculumOpen(true)}
+            className="hidden lg:flex items-center space-x-1.5 px-2.5 py-1 rounded bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 text-[11px] font-medium mr-2 transition-colors"
+          >
+            <GraduationCap className="w-3.5 h-3.5 text-amber-400" />
+            <span>Aprenda C do Zero</span>
+          </button>
+
           {/* Orientation Toggle Button */}
           <div className="flex items-center space-x-1 pl-2">
             <button
-              onClick={() => setSplitOrientation(splitOrientation === 'horizontal' ? 'vertical' : 'horizontal')}
+              onClick={() =>
+                setSplitOrientation(splitOrientation === 'horizontal' ? 'vertical' : 'horizontal')
+              }
               className="p-1 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800 text-xs hidden md:flex items-center space-x-1"
-              title={splitOrientation === 'horizontal' ? 'Mudar para layout vertical (empilhado)' : 'Mudar para layout horizontal (lado a lado)'}
+              title={
+                splitOrientation === 'horizontal'
+                  ? 'Mudar para layout vertical (empilhado)'
+                  : 'Mudar para layout horizontal (lado a lado)'
+              }
             >
               {splitOrientation === 'horizontal' ? (
                 <>
@@ -461,7 +590,9 @@ export default function App() {
           {/* Code Editor Panel */}
           <div
             className={`flex flex-col min-h-0 ${
-              splitOrientation === 'horizontal' ? 'w-full md:w-3/5 h-1/2 md:h-full border-r border-slate-800' : 'w-full h-3/5 border-b border-slate-800'
+              splitOrientation === 'horizontal'
+                ? 'w-full md:w-3/5 h-1/2 md:h-full border-r border-slate-800'
+                : 'w-full h-3/5 border-b border-slate-800'
             }`}
           >
             {activeFile ? (
@@ -534,6 +665,36 @@ export default function App() {
         assemblyCode={assemblyCode}
         isLoading={isLoadingAssembly}
         onRefresh={handleFetchAssembly}
+      />
+
+      {/* Auth Modal (Login / Register) */}
+      <AuthModal
+        isOpen={isAuthOpen}
+        onClose={() => setIsAuthOpen(false)}
+        currentUser={currentUser}
+        onLoginSuccess={handleLoginSuccess}
+        onLogout={handleLogout}
+      />
+
+      {/* Project Manager Modal */}
+      <ProjectManagerModal
+        isOpen={isProjectsOpen}
+        onClose={() => setIsProjectsOpen(false)}
+        currentUser={currentUser}
+        authToken={authToken}
+        currentFiles={files}
+        onOpenAuth={() => {
+          setIsProjectsOpen(false);
+          setIsAuthOpen(true);
+        }}
+        onLoadProject={handleLoadProject}
+      />
+
+      {/* Educational Curriculum Modal (Aprenda C do Zero) */}
+      <CurriculumModal
+        isOpen={isCurriculumOpen}
+        onClose={() => setIsCurriculumOpen(false)}
+        onLoadLessonCode={handleLoadLessonCode}
       />
     </div>
   );

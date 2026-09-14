@@ -6,6 +6,19 @@ import { spawn, execFile } from "child_process";
 import { promisify } from "util";
 import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
+import {
+  initDatabase,
+  createUser,
+  findUserByUsername,
+  findUserById,
+  verifyPassword,
+  generateToken,
+  verifyToken,
+  getUserProjects,
+  createProject,
+  updateProject,
+  deleteProject,
+} from "./server/db";
 
 dotenv.config();
 
@@ -14,6 +27,162 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json({ limit: "5mb" }));
+
+// Authentication middleware
+function authMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ success: false, error: "Não autenticado" });
+  }
+  const token = authHeader.split(" ")[1];
+  const payload = verifyToken(token);
+  if (!payload) {
+    return res.status(401).json({ success: false, error: "Sessão expirada ou token inválido" });
+  }
+  (req as any).user = payload;
+  next();
+}
+
+// Optional Auth (doesn't fail if no token, but attaches user if present)
+function optionalAuthMiddleware(req: express.Request, _res: express.Response, next: express.NextFunction) {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    const token = authHeader.split(" ")[1];
+    const payload = verifyToken(token);
+    if (payload) {
+      (req as any).user = payload;
+    }
+  }
+  next();
+}
+
+// Auth Endpoints (Apenas usuário e senha)
+app.post("/api/auth/register", async (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+    if (!username || typeof username !== "string" || username.trim().length < 3) {
+      return res.status(400).json({ success: false, error: "O nome de usuário deve ter pelo menos 3 caracteres." });
+    }
+    if (!password || typeof password !== "string" || password.length < 4) {
+      return res.status(400).json({ success: false, error: "A senha deve ter pelo menos 4 caracteres." });
+    }
+    const cleanUsername = username.trim();
+    const existing = await findUserByUsername(cleanUsername);
+    if (existing) {
+      return res.status(409).json({ success: false, error: "Nome de usuário já existe. Escolha outro ou entre com sua senha." });
+    }
+    const newUser = await createUser(cleanUsername, password);
+    const token = generateToken(newUser);
+    res.json({
+      success: true,
+      user: { id: newUser.id, username: newUser.username, createdAt: newUser.createdAt },
+      token,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+    if (!username || !password) {
+      return res.status(400).json({ success: false, error: "Informe usuário e senha para entrar." });
+    }
+    const user = await findUserByUsername(username);
+    if (!user) {
+      return res.status(401).json({ success: false, error: "Usuário ou senha incorretos." });
+    }
+    const isValid = verifyPassword(password, user.passwordHash, user.salt);
+    if (!isValid) {
+      return res.status(401).json({ success: false, error: "Usuário ou senha incorretos." });
+    }
+    const token = generateToken(user);
+    res.json({
+      success: true,
+      user: { id: user.id, username: user.username, createdAt: user.createdAt },
+      token,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/auth/me", authMiddleware, async (req, res) => {
+  try {
+    const userId = (req as any).user.userId;
+    const user = await findUserById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, error: "Usuário não encontrado" });
+    }
+    res.json({
+      success: true,
+      user: { id: user.id, username: user.username, createdAt: user.createdAt },
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Projects Endpoints
+app.get("/api/projects", authMiddleware, async (req, res) => {
+  try {
+    const userId = (req as any).user.userId;
+    const projects = await getUserProjects(userId);
+    res.json({ success: true, projects });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/projects", authMiddleware, async (req, res) => {
+  try {
+    const userId = (req as any).user.userId;
+    const { title, name, description, files, stdin, compilerOptions } = req.body || {};
+    const project = await createProject(userId, {
+      title: title || name || "Projeto sem Título",
+      description,
+      files,
+      stdin,
+      compilerOptions,
+    });
+    res.json({ success: true, project });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.put("/api/projects/:id", authMiddleware, async (req, res) => {
+  try {
+    const userId = (req as any).user.userId;
+    const projectId = req.params.id;
+    const { title, name, description, files, stdin, compilerOptions } = req.body || {};
+    const updated = await updateProject(projectId, userId, {
+      title: title || name,
+      description,
+      files,
+      stdin,
+      compilerOptions,
+    });
+    if (!updated) {
+      return res.status(404).json({ success: false, error: "Projeto não encontrado" });
+    }
+    res.json({ success: true, project: updated });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete("/api/projects/:id", authMiddleware, async (req, res) => {
+  try {
+    const userId = (req as any).user.userId;
+    const projectId = req.params.id;
+    const success = await deleteProject(projectId, userId);
+    res.json({ success });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 // Helper to check compiler availability
 async function checkCompiler(name: string): Promise<boolean> {
@@ -291,7 +460,7 @@ app.post("/api/assembly", async (req, res) => {
   }
 });
 
-// Endpoint for AI Code Diagnosis & Correction (Detailed error breakdown, concept explanation & fix)
+// Endpoint for AI Code Diagnosis & Correction (Detailed error breakdown, educational lesson, mental model & fix)
 app.post("/api/ai-diagnose", async (req, res) => {
   const { code, fileName = "main.c", output = "", customPrompt = "" } = req.body || {};
   const apiKey = process.env.GEMINI_API_KEY;
@@ -311,7 +480,8 @@ app.post("/api/ai-diagnose", async (req, res) => {
       },
     });
 
-    const prompt = `Analise o seguinte arquivo de código em linguagem C ('${fileName}') e a saída do compilador/execução:
+    const prompt = `Você é um professor e tutor de ciências da computação especializado em ensinar linguagem C para iniciantes do zero absoluto.
+Analise o seguinte arquivo de código C ('${fileName}') e a saída do compilador/execução:
 
 CÓDIGO FONTE:
 \`\`\`c
@@ -322,17 +492,26 @@ SAÍDA DO COMPILADOR / EXECUÇÃO:
 \`\`\`
 ${output}
 \`\`\`
-${customPrompt ? `DÚVIDA ESPECÍFICA DO USUÁRIO: ${customPrompt}` : ""}
+${customPrompt ? `DÚVIDA ESPECÍFICA DO ALUNO: ${customPrompt}` : ""}
 
-Forneça um diagnóstico didático estruturado em formato JSON com os seguintes campos:
+Seu objetivo não é apenas apontar o erro, mas ensinar a matéria e os fundamentos da linguagem C por trás dele.
+Gere um diagnóstico pedagógico estruturado em formato JSON com os seguintes campos:
 - hasError (boolean): se há algum erro ou advertência grave no código
-- errorTitle (string): título curto e claro do problema (ex: "Ponto e vírgula ausente", "Incompatibilidade de formato no printf", "Ponteiro não inicializado")
+- errorTitle (string): título curto e acolhedor (ex: "Ponto e vírgula ausente (;)", "O Segredo do Operador & no scanf", "Acesso Indevido de Memória (SegFault)")
 - file (string): nome do arquivo
 - line (number): número da linha onde está o erro (se detectado)
 - col (number): número da coluna (se detectado, ou 1)
-- whatWentWrong (string): explicação em Português simples do que exatamente o usuário errou
-- whyItHappened (string): explicação técnica de como a linguagem C e o compilador funcionam nesse caso (ex: manipulação de pilha, buffers, tipos estáticos, semântica de ponteiros)
-- howToFix (string): instruções claras de como corrigir
+- whatWentWrong (string): explicação em Português simples e direto do que o aluno errou
+- whyItHappened (string): explicação técnica profunda de como a linguagem C e o hardware funcionam nesse caso (pilha/stack, ponteiros, registradores, terminador '\\0', tipos)
+- educationalLesson (string): lição didática em tom de professor paciente, usando uma analogia do mundo real (ex: armários escolares, receitas de bolo, endereços postais de casas)
+- mentalModel (string): diagrama visual esquemático em texto/ASCII representando o que aconteceu na memória RAM (ex: [Endereço: 0x1000 | Nome: var | Valor: ???] ou [Pilha: main() -> ponteiro -> NULL])
+- goldenRule (string): regra de ouro ou dica mnemônica para o aluno nunca mais errar isso na carreira
+- miniQuiz (object): um pequeno quiz de 1 pergunta para o aluno testar se entendeu:
+  - question (string)
+  - options (array de 3 strings)
+  - correctIndex (number: 0, 1 ou 2)
+  - explanation (string: explicação curta do porquê a resposta certa é aquela)
+- howToFix (string): instruções passo a passo de como corrigir
 - originalSnippet (string): trecho do código que contém o erro
 - fixedSnippet (string): trecho corrigido correspondente
 - fullFixedCode (string): o arquivo de código C completo com a correção aplicada
@@ -353,6 +532,22 @@ Forneça um diagnóstico didático estruturado em formato JSON com os seguintes 
             col: { type: Type.INTEGER },
             whatWentWrong: { type: Type.STRING },
             whyItHappened: { type: Type.STRING },
+            educationalLesson: { type: Type.STRING },
+            mentalModel: { type: Type.STRING },
+            goldenRule: { type: Type.STRING },
+            miniQuiz: {
+              type: Type.OBJECT,
+              properties: {
+                question: { type: Type.STRING },
+                options: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
+                correctIndex: { type: Type.INTEGER },
+                explanation: { type: Type.STRING },
+              },
+              required: ["question", "options", "correctIndex", "explanation"],
+            },
             howToFix: { type: Type.STRING },
             originalSnippet: { type: Type.STRING },
             fixedSnippet: { type: Type.STRING },
@@ -381,13 +576,60 @@ Forneça um diagnóstico didático estruturado em formato JSON com os seguintes 
   }
 });
 
+// Endpoint to explain code line-by-line for learners
+app.post("/api/ai-explain-code", async (req, res) => {
+  const { code, fileName = "main.c" } = req.body || {};
+  const apiKey = process.env.GEMINI_API_KEY;
+
+  if (!apiKey) {
+    return res.json({
+      success: true,
+      text: "Para explicações geradas com IA, adicione a GEMINI_API_KEY. O código atual usa o compilador C nativo.",
+      fallback: true,
+    });
+  }
+
+  try {
+    const { GoogleGenAI } = await import("@google/genai");
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          "User-Agent": "aistudio-build",
+        },
+      },
+    });
+
+    const prompt = `Você é um professor renomado de Ciência da Computação ensinando programação C para alguém que está aprendendo do zero absoluto.
+Explique de forma extremamente clara, didática e acolhedora como o seguinte programa C ('${fileName}') funciona:
+
+\`\`\`c
+${code}
+\`\`\`
+
+Estruture sua resposta assim:
+1. **Visão Geral**: O que este programa faz e qual o objetivo dele na prática.
+2. **Passo a Passo Linha por Linha**: Explique cada bloco ou comando essencial (#include, int main, variáveis, printf, scanf, loops, ponteiros, return 0) como se estivesse explicando para alguém no primeiro dia de faculdade.
+3. **O que acontece na Memória RAM**: Explique onde cada variável é criada e o que a CPU faz.
+4. **Dicas de Ouro & Boas Práticas**: Como um programador profissional de C escreveria e cuidaria desse código.`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-3.8-flash",
+      contents: prompt,
+    });
+
+    res.json({ success: true, text: response.text });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Endpoint for AI Code Assistance (explanation, fix suggestion)
 app.post("/api/ai-assist", async (req, res) => {
   const { code, output, type = "explain" } = req.body;
   const apiKey = process.env.GEMINI_API_KEY;
 
   if (!apiKey) {
-    // Provide built-in heuristic analysis when API key is not configured
     let fallback = "";
     if (type === "explain-error") {
       fallback = "Dica: Para habilitar explicações com inteligência artificial contextualizada, configure a GEMINI_API_KEY nas Configurações.\n\nVerifique os pontos comuns em C:\n1. Ponto e vírgula esquecido (;) no final de comandos ou structs.\n2. Incompatibilidade em printf/scanf (ex: usar %d para float ou esquecer & no scanf).\n3. Ponteiro nulo ou acesso fora dos limites do array (Segmentation Fault).\n4. Inclusão dos headers necessários (#include <stdio.h>, #include <stdlib.h>, #include <string.h>).";
@@ -451,6 +693,9 @@ ${code}
 });
 
 async function startServer() {
+  // Initialize persistent database
+  await initDatabase().catch((e) => console.error("Database init error:", e));
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

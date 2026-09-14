@@ -88,7 +88,6 @@ export function runSemanticCHeuristicAnalysis(
 
   // Case 1: Timeout / Loop Infinito
   if (runResult?.timedOut) {
-    // Try to find while or for loop
     let loopLine = 1;
     for (let i = 0; i < lines.length; i++) {
       if (/while\s*\(|for\s*\(|do\s*\{/.test(lines[i])) {
@@ -100,12 +99,32 @@ export function runSemanticCHeuristicAnalysis(
     return {
       id: 'timeout-' + Date.now(),
       hasError: true,
-      errorTitle: 'Tempo Limite de Execução Excedido (Possível Loop Infinito)',
+      errorTitle: 'Tempo Limite Excedido: Cuidado com o Loop Infinito!',
       file: fileName,
       line: loopLine,
-      whatWentWrong: 'O programa demorou mais de 10 segundos para finalizar e foi interrompido pelo sistema.',
+      whatWentWrong: 'O programa rodou por mais de 10 segundos sem parar e foi interrompido pelo sistema de segurança.',
       whyItHappened:
-        'Na linguagem C, um laço de repetição (`while`, `for` ou `do-while`) continua executando indefinidamente se a condição de teste nunca for atualizada para falsa (0) ou se a variável de controle não for incrementada/decrementada.',
+        'Em C, laços como `while(condicao)` e `for(...)` continuam rodando enquanto a condição for verdadeira (diferente de zero). Se o código esquecer de atualizar a variável contadora ou a condição de saída nunca for atingida, a CPU entra em um ciclo perpétuo.',
+      educationalLesson:
+        'Pense em um loop como correr em volta de uma pista de atletismo: você precisa de um contador dizendo "já dei 3 voltas, na 5ª eu paro". Se você não contar as voltas, correrá até a exaustão! Em C, o computador não adivinha quando parar, você precisa incrementar a variável (ex: i++) explicitamente.',
+      mentalModel: `[ Início ]
+    ↓
+┌─> [ Teste: i < 5 ] ──(Falso)──> [ Fim do Programa ]
+│       ↓ (Verdadeiro)
+│   [ Executa o bloco ]
+│   [ ⚠️ Esqueceu i++ ! i continua 0 ]
+└───┘ (Repete para sempre, consumindo 100% da CPU)`,
+      goldenRule: 'Regra de Ouro: Todo laço precisa de 3 coisas: 1. Início (i = 0), 2. Condição de parada (i < 10) e 3. Passo de avanço (i++).',
+      miniQuiz: {
+        question: 'O que acontece com `int i = 0; while(i < 5) { printf("%d", i); }`?',
+        options: [
+          'Imprime de 0 até 4 e finaliza',
+          'Imprime 0 infinitamente porque `i` nunca muda de valor',
+          'Dá erro de compilação',
+        ],
+        correctIndex: 1,
+        explanation: 'Como não há `i++` dentro do bloco, `i` sempre vale 0, e a condição `0 < 5` é eternamente verdadeira.',
+      },
       howToFix:
         'Verifique se a variável de controle do laço é atualizada dentro do bloco (ex: `i++` ou `contador--`). Se o programa espera entrada de dados (`scanf`), certifique-se de preencher a aba "Entrada (stdin)".',
       originalSnippet: lines[loopLine - 1] || 'while (...)',
@@ -124,11 +143,26 @@ export function runSemanticCHeuristicAnalysis(
     return {
       id: 'segfault-' + Date.now(),
       hasError: true,
-      errorTitle: 'Falha de Segmentação (Segmentation Fault / SIGSEGV)',
+      errorTitle: 'Falha de Segmentação (Segmentation Fault - Violação de Memória)',
       file: fileName,
-      whatWentWrong: 'O programa tentou ler ou escrever em uma área de memória não permitida ou inexistente.',
+      whatWentWrong: 'Seu programa tentou ler ou escrever em um endereço de memória proibido pelo Sistema Operacional.',
       whyItHappened:
-        'Em C, a memória é gerenciada diretamente pelo programador. Esse erro acontece quando você desreferencia um ponteiro nulo (`NULL`), acessa um índice fora dos limites de um vetor (buffer overflow), ou passa uma variável sem o operador `&` para o `scanf`.',
+        'C não possui um "Garbage Collector" ou máquina virtual protetora: o programa conversa direto com a memória física. Quando você tenta desreferenciar um ponteiro nulo (endereço 0x0) ou acessar um vetor fora do seu limite, a Unidade de Gerenciamento de Memória (MMU) do processador trava o programa para proteger o computador.',
+      educationalLesson:
+        'Imagine que a memória RAM é um prédio de apartamentos numerados. Você tem a chave apenas dos apartamentos que alugou (suas variáveis). Se você tentar arrombar a porta de um apartamento vizinho ou um andar inexistente, a polícia (o Sistema Operacional) interrompe você imediatamente com um SegFault!',
+      mentalModel: `MEMÓRIA RAM DO SISTEMA:
+[ 0x00000000 ] -> ÁREA RESTRITA (NULL) ❌ Tentou acessar aqui! -> CRASH!
+[ 0x7FFF0010 ] -> int nota = 10;      ✅ Permitido (sua variável)
+[ 0x7FFF0014 ] -> vetor[0]             ✅ Permitido
+[ 0x7FFF0024 ] -> vetor[4]             ✅ Permitido
+[ 0x7FFF0028 ] -> vetor[99]            ❌ FORA DO LIMITE! (Estouro de buffer)`,
+      goldenRule: 'Regra de Ouro: Nunca use um ponteiro sem verificar se ele é diferente de NULL (`if (ptr != NULL)`), e lembre-se que um array de tamanho N vai de [0] até [N-1].',
+      miniQuiz: {
+        question: 'Se declaramos `int v[5];`, qual é o último índice válido para acesso?',
+        options: ['v[5]', 'v[4]', 'v[1]'],
+        correctIndex: 1,
+        explanation: 'Em C os vetores começam no índice 0. Um vetor com 5 posições tem índices válidos de 0 a 4.',
+      },
       howToFix:
         '1. Revise chamadas a `scanf`: variáveis numéricas exigem `&` (ex: `scanf("%d", &num);`).\n2. Verifique os índices de arrays para garantir que não ultrapassam o tamanho declarado.\n3. Se usar `malloc()`, confirme se o ponteiro alocado não é `NULL` antes de utilizá-lo.',
       category: 'memory',
@@ -137,13 +171,11 @@ export function runSemanticCHeuristicAnalysis(
   }
 
   // Case 3: Missing Semicolon ';'
-  // Example: main.c:8:5: error: expected ';' before 'return'
   const semiMatch = rawText.match(
     /(?:([^:\n]+):)?(\d+):(?:\d+:)?\s*error:\s*expected\s*['‘];['’]/i
   );
   if (semiMatch) {
     const errLine = parseInt(semiMatch[2], 10);
-    // Usually in C, the missing semicolon is on the previous non-empty line
     let actualLine = errLine;
     for (let l = errLine - 2; l >= 0; l--) {
       if (lines[l].trim().length > 0 && !lines[l].trim().startsWith('//') && !lines[l].trim().startsWith('/*')) {
@@ -161,12 +193,28 @@ export function runSemanticCHeuristicAnalysis(
     return {
       id: 'semi-' + Date.now(),
       hasError: true,
-      errorTitle: 'Ponto e Vírgula Faltando (Expected \';\')',
+      errorTitle: 'Ponto e Vírgula Faltando (;)',
       file: fileName,
       line: actualLine,
-      whatWentWrong: `Faltou colocar o ponto e vírgula \`;\` no final do comando na linha ${actualLine}.`,
+      whatWentWrong: `Faltou colocar o ponto e vírgula \`;\` no final da instrução na linha ${actualLine}.`,
       whyItHappened:
-        'Na linguagem C, cada comando e instrução deve terminar obrigatoriamente com um ponto e vírgula `;`. O compilador lê instruções sem levar em consideração quebras de linha e tentou interpretar a linha seguinte como parte desta, gerando erro de sintaxe.',
+        'Diferente de linguagens como Python ou JavaScript, em C o caractere de quebra de linha (Enter) é ignorado pelo compilador. A única forma de o compilador saber onde uma ordem termina e a próxima começa é através do caractere `;`.',
+      educationalLesson:
+        'Pense no ponto e vírgula em C como o ponto final em uma frase da língua portuguesa. Sem o ponto final, duas ordens diferentes se fundem em um texto incompreensível. Por exemplo: "Feche a porta apague a luz" precisa de pontuação para fazer sentido!',
+      mentalModel: `SEU CÓDIGO:              COMO O COMPILADOR ENXERGA:
+int x = 10               ┌─ "int x = 10 printf("Olá");"
+printf("Olá");          └─ ERRO: O que significa '10 printf'? Faltou ';' delimitando!`,
+      goldenRule: 'Regra de Ouro: Quase todas as linhas de comando executável em C terminam com `;`. As únicas exceções comuns são `#include`, diretivas `#define` e o início de blocos com `{}`.',
+      miniQuiz: {
+        question: 'Qual das opções abaixo está com a pontuação 100% correta em C?',
+        options: [
+          'int idade = 20;',
+          'int idade = 20',
+          '#include <stdio.h>;',
+        ],
+        correctIndex: 0,
+        explanation: 'Declarações e atribuições exigem `;` no final. Diretivas com `#include` não levam ponto e vírgula!',
+      },
       howToFix: `Adicione \`;\` ao final da linha ${actualLine}:`,
       originalSnippet: faultyLineText,
       fixedSnippet: fixedLineText,
@@ -177,7 +225,6 @@ export function runSemanticCHeuristicAnalysis(
   }
 
   // Case 4: Missing '&' in scanf
-  // Example: format '%d' expects argument of type 'int *', but argument 2 has type 'int'
   const scanfMatch = rawText.match(
     /(?:([^:\n]+):)?(\d+):(?:\d+:)?\s*(?:warning|error):\s*format\s*['‘]%[a-zA-Z]['’]\s*expects argument of type\s*['‘][^'’]*\*\s*['’],\s*but argument\s*\d+\s*has type\s*['‘](int|float|double|char)['’]/i
   );
@@ -185,7 +232,6 @@ export function runSemanticCHeuristicAnalysis(
     const errLine = parseInt(scanfMatch[2], 10);
     const lineContent = lines[errLine - 1] || '';
 
-    // Fix: scanf("%d", x) -> scanf("%d", &x)
     const fixedContent = lineContent.replace(
       /(scanf\s*\(\s*"[^"]+"\s*,\s*)([a-zA-Z_][a-zA-Z0-9_]*)/g,
       (_m, p1, p2) => `${p1}&${p2}`
@@ -197,12 +243,32 @@ export function runSemanticCHeuristicAnalysis(
     return {
       id: 'scanf-' + Date.now(),
       hasError: true,
-      errorTitle: 'Falta do Operador de Endereço (&) no scanf',
+      errorTitle: 'Falta do Operador de Endereço (&) na Função scanf',
       file: fileName,
       line: errLine,
-      whatWentWrong: `Na linha ${errLine}, a função \`scanf\` recebeu a variável por valor em vez de receber seu endereço de memória.`,
+      whatWentWrong: `Na linha ${errLine}, a função \`scanf\` recebeu o valor atual da variável em vez do endereço de memória onde ela deve salvar o valor digitado.`,
       whyItHappened:
-        'A linguagem C passa argumentos por valor (cópia). Para que o `scanf` consiga gravar o valor digitado pelo usuário na sua variável original, ele precisa receber um ponteiro com a posição física de memória da variável, obtido com o operador `&`.',
+        'Em C, todas as variáveis passadas para funções são passadas por cópia (valor). Se você passar apenas `x`, o scanf recebe apenas uma cópia de x e não consegue modificar a sua variável real! Para o scanf gravar algo na sua variável, você precisa passar o endereço de memória dela usando o operador `&` (e-comercial).',
+      educationalLesson:
+        'Imagine que você contratou um entregador dos correios (o scanf) para deixar uma encomenda na sua casa. Se você apenas disser "tenho uma camisa azul" (o valor da variável), ele não sabe onde entregar! Você precisa entregar o endereço da sua rua e número (o &variavel) para ele colocar a encomenda na gaveta certa.',
+      mentalModel: `VARIÁVEL NA MEMÓRIA:
+Nome:  num
+Valor: 0
+Endereço: 0x7FFE20 (localização física na placa-mãe)
+
+scanf("%d", num)   -> Passa o número 0. O scanf tenta gravar no endereço 0x00 -> SegFault!
+scanf("%d", &num)  -> Passa o endereço 0x7FFE20. O scanf guarda a digitação no lugar certo!`,
+      goldenRule: 'Regra de Ouro: Ao ler tipos primitivos numéricos com scanf (int, float, double, char), SEMPRE use o `&` antes da variável: `scanf("%d", &minhaVariavel);`. A única exceção é vetor de char (strings), que já representa um endereço.',
+      miniQuiz: {
+        question: 'Para ler um número decimal `float preco;`, qual a linha correta?',
+        options: [
+          'scanf("%f", preco);',
+          'scanf("%f", &preco);',
+          'printf("%f", &preco);',
+        ],
+        correctIndex: 1,
+        explanation: 'O `&` é obrigatório para informar ao scanf onde na memória o número lido deve ser guardado.',
+      },
       howToFix: 'Coloque o operador `&` antes do nome da variável que receberá a leitura:',
       originalSnippet: lineContent,
       fixedSnippet: fixedContent,
@@ -213,7 +279,6 @@ export function runSemanticCHeuristicAnalysis(
   }
 
   // Case 5: Format specifier mismatch in printf
-  // Example: format '%d' expects argument of type 'int', but argument 2 has type 'char *'
   const formatMatch = rawText.match(
     /(?:([^:\n]+):)?(\d+):(?:\d+:)?\s*(?:warning|error):\s*format\s*['‘](%[a-zA-Z])['’]\s*expects argument of type\s*['‘]([^'’]+)['’],\s*but argument\s*\d+\s*has type\s*['‘]([^'’]+)['’]/i
   );
@@ -240,9 +305,28 @@ export function runSemanticCHeuristicAnalysis(
       errorTitle: 'Incompatibilidade de Especificador de Formato (printf)',
       file: fileName,
       line: errLine,
-      whatWentWrong: `O especificador \`${wrongFormat}\` espera um tipo \`${expectedType}\`, mas você forneceu \`${actualType}\`.`,
+      whatWentWrong: `O especificador de formato \`${wrongFormat}\` não corresponde ao tipo da variável (\`${actualType}\`).`,
       whyItHappened:
-        'A função `printf` em C é variádica (aceita número flexível de parâmetros). Ela depende exclusivamente das strings de formatação para saber quantos bytes ler da pilha de execução da CPU. Usar o especificador errado resulta em lixo de memória ou comportamento indefinido.',
+        'A função `printf` não sabe automaticamente quais tipos de variáveis você passou para ela. Ela olha os símbolos que começam com `%` para saber quantos bytes retirar da pilha da CPU e como traduzir esses zeros e uns em texto na tela.',
+      educationalLesson:
+        'Pense nos especificadores como moldes de confeitaria: `%d` é um molde para números inteiros (decimal), `%f` é para números quebrados (float), `%c` é para uma letra única (char) e `%s` é para palavras inteiras (string). Se você tentar colocar água em um molde furado de espaguete, o resultado é uma bagunça!',
+      mentalModel: `ESPECIFICADORES FUNDAMENTAIS EM C:
+┌─────────┬───────────────┬────────────────────────────┐
+│ Símbolo │ Tipo          │ Exemplo                    │
+├─────────┼───────────────┼────────────────────────────┤
+│ %d / %i │ int (inteiro) │ printf("%d", 42);          │
+│ %f      │ float/double  │ printf("%.2f", 3.14);      │
+│ %c      │ char (letra)  │ printf("%c", 'A');         │
+│ %s      │ string/texto  │ printf("%s", "Ola mundo"); │
+│ %p      │ ponteiro/ram  │ printf("%p", (void*)&x);   │
+└─────────┴───────────────┴────────────────────────────┘`,
+      goldenRule: 'Regra de Ouro: %d para inteiros, %f para decimais com vírgula, %c para uma única letra entre aspas simples (\'a\') e %s para texto entre aspas duplas ("texto").',
+      miniQuiz: {
+        question: 'Qual especificador você deve usar para imprimir `double media = 8.75;`?',
+        options: ['%d', '%f ou %lf', '%c'],
+        correctIndex: 1,
+        explanation: 'Números com ponto flutuante (decimais) usam `%f` (ou `%lf` para double).',
+      },
       howToFix: `Altere o especificador de formato de \`${wrongFormat}\` para \`${suggestedFormat}\`:`,
       originalSnippet: lineContent,
       fixedSnippet: fixedContent,
@@ -282,12 +366,31 @@ export function runSemanticCHeuristicAnalysis(
     return {
       id: 'implicit-' + Date.now(),
       hasError: true,
-      errorTitle: `Declaração Implícita da Função '${funcName}'`,
+      errorTitle: `Declaração Implícita da Função '${funcName}' (Falta de Header)`,
       file: fileName,
       line: errLine,
-      whatWentWrong: `A função \`${funcName}()\` foi chamada na linha ${errLine} sem ter sido declarada previamente.`,
+      whatWentWrong: `A função \`${funcName}()\` foi chamada na linha ${errLine} sem que o compilador conheça o protótipo dela.`,
       whyItHappened:
-        'A partir do padrão C99, o compilador exige que todas as funções sejam declaradas antes de serem chamadas. Sem o protótipo, o compilador não sabe quais tipos de parâmetros a função aceita nem qual tipo ela retorna.',
+        'A partir do padrão C99, o compilador exige que toda função seja declarada antes do uso. Sem o arquivo de cabeçalho (.h), o compilador não sabe quais tipos de parâmetros a função aceita nem qual tipo ela devolve, o que pode corromper a pilha de execução.',
+      educationalLesson:
+        'Pense nos arquivos de cabeçalho (`#include <...h>`) como o índice de receitas de um livro de culinária. Se você pedir ao seu assistente para fazer "suflê de queijo" sem mostrar a receita correspondente, ele não saberá quais ingredientes usar nem quanto tempo assar!',
+      mentalModel: `BIBLIOTECAS ESSENCIAIS EM C:
+┌──────────────┬────────────────────────────────────────────────────────┐
+│ Cabeçalho    │ O que ele ensina ao compilador?                        │
+├──────────────┼────────────────────────────────────────────────────────┤
+│ <stdio.h>    │ printf, scanf, getchar, fopen, NULL                    │
+│ <stdlib.h>   │ malloc, free, exit, atoi, rand, abs                    │
+│ <string.h>   │ strlen, strcpy, strcmp, strcat                         │
+│ <math.h>     │ sqrt, pow, sin, cos, floor, ceil                       │
+│ <stdbool.h>  │ bool, true, false (padrão C99+)                        │
+└──────────────┴────────────────────────────────────────────────────────┘`,
+      goldenRule: `Regra de Ouro: Usou funções matemáticas como sqrt()? Use \`#include <math.h>\`. Usou malloc/free? Use \`#include <stdlib.h>\`. Usou strings? Use \`#include <string.h>\`.`,
+      miniQuiz: {
+        question: 'Qual biblioteca é obrigatória para usar a função `sqrt(25)` para calcular raiz quadrada?',
+        options: ['<stdio.h>', '<math.h>', '<stdlib.h>'],
+        correctIndex: 1,
+        explanation: '`<math.h>` contém as declarações de todas as funções matemáticas padrão do C.',
+      },
       howToFix: `Adicione o cabeçalho \`#include ${headerNeeded}\` no topo do seu arquivo \`${fileName}\`.`,
       originalSnippet: lines[errLine - 1] || `${funcName}(...)`,
       fixedSnippet: `#include ${headerNeeded}`,
@@ -312,9 +415,28 @@ export function runSemanticCHeuristicAnalysis(
       errorTitle: `Variável '${varName}' Não Declarada`,
       file: fileName,
       line: errLine,
-      whatWentWrong: `A variável \`${varName}\` foi utilizada na linha ${errLine}, mas não foi declarada com nenhum tipo.`,
+      whatWentWrong: `Você tentou usar o nome \`${varName}\` na linha ${errLine}, mas ele nunca foi criado ou foi declarado com erro de digitação.`,
       whyItHappened:
-        'C é uma linguagem estaticamente tipada. Toda variável precisa ser declarada com seu tipo explícito (como `int`, `float`, `char`, `double`) antes de ser usada para que o compilador possa alocar espaço em memória.',
+        'C é uma linguagem estaticamente tipada. Antes de armazenar qualquer dado, você precisa instruir o compilador explicitamente sobre quanto espaço de memória reservar e qual tipo de dado será guardado (`int`, `float`, `char`, etc.). Além disso, a linguagem C é estritamente sensível a maiúsculas e minúsculas (case-sensitive).',
+      educationalLesson:
+        'Imagine que uma variável é uma caixa organizadora. Antes de guardar um brinquedo dentro dela, você precisa ir até a prateleira, pegar a caixa e colar uma etiqueta dizendo o que vai dentro (ex: `int idade;`). Se você tentar colocar a idade sem ter a caixa primeiro, ela cai no chão!',
+      mentalModel: `COMO CRIAR UMA VARIÁVEL EM C:
+┌─────────────────┬───────────────────┬────────────────────────────────┐
+│ 1. Tipo do Dado │ 2. Nome do Rótulo │ 3. Inicialização Obrigatória   │
+├─────────────────┼───────────────────┼────────────────────────────────┤
+│ int             │ ${varName}             │ = 0;   (evita lixo de memória) │
+└─────────────────┴───────────────────┴────────────────────────────────┘`,
+      goldenRule: 'Regra de Ouro: Em C, variáveis não inicializadas contêm "lixo de memória" (números aleatórios deixados por outros programas). Sempre inicialize suas variáveis ao declarar: `int x = 0;`.',
+      miniQuiz: {
+        question: 'Em C, `idade` e `Idade` referem-se à mesma variável?',
+        options: [
+          'Sim, C ignora maiúsculas e minúsculas',
+          'Não, C é case-sensitive e considera nomes diferentes',
+          'Depende do sistema operacional',
+        ],
+        correctIndex: 1,
+        explanation: 'C diferencia estritamente letras maiúsculas de minúsculas. `idade` e `Idade` são duas variáveis totalmente distintas.',
+      },
       howToFix: `Declare a variável antes de utilizá-la, por exemplo: \`int ${varName} = 0;\``,
       originalSnippet: lineContent,
       category: 'syntax',
@@ -328,11 +450,28 @@ export function runSemanticCHeuristicAnalysis(
     return {
       id: 'nomain-' + Date.now(),
       hasError: true,
-      errorTitle: 'Ponto de Entrada Não Encontrado (Falta a função main)',
+      errorTitle: 'Falta a Função Principal `int main()`',
       file: fileName,
-      whatWentWrong: 'O compilador/linker não encontrou a função principal `main()`.',
+      whatWentWrong: 'O compilador não encontrou o ponto de partida do seu programa: a função `main()`.',
       whyItHappened:
-        'Todo programa executável em C precisa de uma função chamada `main` que serve como o ponto inicial de execução do processo carregado pelo sistema operacional.',
+        'Todo programa executável em C precisa obrigatoriamente de uma função com o nome exato `main`. Quando o Sistema Operacional executa o seu arquivo binário compilado, a CPU salta diretamente para a primeira instrução da função `main`.',
+      educationalLesson:
+        'Pense na função `main()` como a porta de entrada da sua casa. Uma casa pode ter salas, quartos e cozinha (outras funções), mas se não houver porta de entrada, ninguém consegue entrar!',
+      mentalModel: `FLUXO DE EXECUÇÃO DO SISTEMA OPERACIONAL:
+Sistema Operacional
+    ↓ (Chama)
+[ int main() ] ──> printf("Olá"); ──> [ return 0; ] ──> Devolve controle ao SO com sucesso!`,
+      goldenRule: 'Regra de Ouro: Todo programa executável em C começa em `int main() { ... return 0; }`. O `return 0;` avisa ao sistema operacional que tudo correu perfeitamente bem!',
+      miniQuiz: {
+        question: 'O que o comando `return 0;` ao final da `main` sinaliza para o sistema operacional?',
+        options: [
+          'Que houve um erro fatal',
+          'Que o programa terminou com sucesso (código de saída 0)',
+          'Que o programa deve reiniciar',
+        ],
+        correctIndex: 1,
+        explanation: 'Por convenção internacional nos sistemas operacionais (Unix, Linux, Windows), o código de saída 0 significa "sucesso sem erros".',
+      },
       howToFix: 'Adicione a função `int main(void)` com o `return 0;` no final:',
       fixedSnippet: 'int main(void) {\n    printf("Olá, Mundo!\\n");\n    return 0;\n}',
       fullFixedCode: code + mainSnippet,
@@ -350,9 +489,24 @@ export function runSemanticCHeuristicAnalysis(
       errorTitle: 'Chave de Fechamento Faltando (\'}\')',
       file: fileName,
       line: lines.length,
-      whatWentWrong: 'Faltou fechar um bloco ou função com a chave `}` antes do fim do arquivo.',
+      whatWentWrong: 'Faltou fechar uma chave `}` antes do fim do arquivo.',
       whyItHappened:
-        'Na linguagem C, blocos de funções, laços (`for`, `while`) e estruturas condicionais (`if`) são delimitados por pares `{` e `}`. Um par aberto não foi fechado.',
+        'Na linguagem C, blocos de código (corpo de funções, laços `for`/`while`, estruturas `if`/`else`) são delimitados por pares de chaves `{` e `}`. Um par aberto não foi fechado antes do fim do código.',
+      educationalLesson:
+        'As chaves em C funcionam como parênteses em expressões matemáticas ou aspas em um diálogo: toda vez que você abre `{`, você é obrigado a fechar `}` quando o bloco terminar.',
+      mentalModel: `BALANCEAMENTO DE CHAVES:
+int main() {         <── 1 aberta
+    if (x > 0) {     <── 2 abertas
+        printf("ok");
+    }                <── fechou a 2ª (ok)
+}                    <── ⚠️ Faltou esta aqui!`,
+      goldenRule: 'Regra de Ouro: Mantenha seu código sempre indentado (com espaços/tabs). A indentação visual revela instantaneamente quando uma chave ficou sem par correspondente.',
+      miniQuiz: {
+        question: 'Se você abrir 3 chaves `{`, quantas chaves `}` devem ser fechadas no total?',
+        options: ['1', '3', 'Nenhuma, o compilador fecha sozinho'],
+        correctIndex: 1,
+        explanation: 'Cada chave aberta `{` precisa de exatamente uma chave de fechamento `}` correspondente.',
+      },
       howToFix: 'Adicione uma chave `}` no final do arquivo para fechar o bloco aberto:',
       fixedSnippet: '}',
       fullFixedCode: fullFixed,
@@ -369,12 +523,15 @@ export function runSemanticCHeuristicAnalysis(
   return {
     id: 'generic-' + Date.now(),
     hasError: true,
-    errorTitle: 'Diagnóstico de Erro do Compilador',
+    errorTitle: 'Diagnóstico Pedagógico do Compilador',
     file: fileName,
     line: detectedLine,
     whatWentWrong: `O compilador GCC reportou: "${rawMsg}" na linha ${detectedLine}.`,
     whyItHappened:
       'Instruções em C requerem tipagem estrita, declaração prévia de símbolos e sintaxe precisa com ponto e vírgula e parênteses balanceados.',
+    educationalLesson:
+      'Aprender C é como aprender a construir um motor de carro: você tem controle absoluto sobre cada engrenagem e parafuso, mas o compilador exige precisão milimétrica. Não se desanime com mensagens de erro: elas são as ferramentas de um artesão de software!',
+    goldenRule: 'Dica do Professor: Leia com calma a linha informada pelo compilador. Na maioria dos casos, o erro está exatamente nela ou na linha imediatamente anterior!',
     howToFix: 'Inspecione a linha indicada no editor e verifique tipos de dados, pontuação e inclusão de bibliotecas.',
     originalSnippet: lines[detectedLine - 1] || '',
     category: 'general',

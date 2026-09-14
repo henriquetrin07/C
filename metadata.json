@@ -1,6 +1,6 @@
 {
   "name": "C Web IDE & Compiler",
-  "description": "IDE online de linguagem C no estilo CDB compiler com execução em tempo real, suporte a GCC/TCC, entrada stdin e IA para diagnóstico de erros, explicação do porquê ocorrem e correção automática.",
+  "description": "IDE online estilo OnlineGDB / CDB compiler com IA pedagógica para diagnóstico, explicação do porquê dos erros e correção automática, plataforma educacional 'Aprenda C do Zero' e login com persistência de projetos na nuvem.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

@@ -1,0 +1,24 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/health",
+      "destination": "/api/health"
+    },
+    {
+      "source": "/api/compile-run",
+      "destination": "/api/compile-run"
+    },
+    {
+      "source": "/api/assembly",
+      "destination": "/api/assembly"
+    },
+    {
+      "source": "/api/ai-assist",
+      "destination": "/api/ai-assist"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}

@@ -8,8 +8,14 @@ import { ExamplesModal } from './components/ExamplesModal';
 import { AssemblyModal } from './components/AssemblyModal';
 import { SourceFile, CompilerOptions, RunResult, ExampleTemplate } from './types';
 import { EXAMPLES } from './data/examples';
-import { parseCompilerDiagnostics } from './utils/parser';
 import { Columns, Rows } from 'lucide-react';
+import {
+  checkBackendAvailability,
+  executeCCode,
+  generateAssembly,
+  getAiAssistance,
+  EngineMode,
+} from './utils/cRunner';
 
 const STORAGE_KEY_FILES = 'c_ide_files_v1';
 const STORAGE_KEY_OPTIONS = 'c_ide_options_v1';
@@ -57,7 +63,7 @@ export default function App() {
   const [splitOrientation, setSplitOrientation] = useState<'horizontal' | 'vertical'>('horizontal');
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [runResult, setRunResult] = useState<RunResult | null>(null);
-  const [serverReady, setServerReady] = useState<boolean>(false);
+  const [engineMode, setEngineMode] = useState<EngineMode>('cloud');
   const [highlightedLine, setHighlightedLine] = useState<number | null>(null);
 
   // Modals state
@@ -96,16 +102,9 @@ export default function App() {
   useEffect(() => {
     let isMounted = true;
     const checkServer = async () => {
-      try {
-        const res = await fetch('/api/health');
-        if (res.ok) {
-          const data = await res.json();
-          if (data.status === 'ok' && isMounted) {
-            setServerReady(true);
-          }
-        }
-      } catch {
-        if (isMounted) setServerReady(false);
+      const mode = await checkBackendAvailability();
+      if (isMounted) {
+        setEngineMode(mode);
       }
     };
 
@@ -158,50 +157,23 @@ export default function App() {
     setIsRunning(true);
     setHighlightedLine(null);
 
-    // Prepare compiler flags
-    const flags: string[] = [];
-    if (compilerOptions.enablePedantic) flags.push('-pedantic');
-    if (compilerOptions.customFlags.trim()) {
-      const parts = compilerOptions.customFlags.trim().split(/\s+/);
-      flags.push(...parts);
-    }
-
     try {
-      const res = await fetch('/api/compile-run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          files: files.map((f) => ({ name: f.name, content: f.content })),
-          stdin,
-          compiler: compilerOptions.compiler,
-          standard: compilerOptions.standard,
-          optimization: compilerOptions.optimization,
-          flags,
-        }),
-      });
+      const { result, usedEngine } = await executeCCode(
+        files,
+        stdin,
+        compilerOptions,
+        engineMode
+      );
 
-      const data = await res.json();
-      const rawDiagText = (data.compileOutput || '') + '\n' + (data.stderr || '');
-      const diagnostics = parseCompilerDiagnostics(rawDiagText);
+      if (usedEngine !== engineMode) {
+        setEngineMode(usedEngine);
+      }
 
-      setRunResult({
-        success: data.success,
-        phase: data.phase || 'idle',
-        compiler: data.compiler || compilerOptions.compiler,
-        compileOutput: data.compileOutput || '',
-        compilationTimeMs: data.compilationTimeMs || 0,
-        stdout: data.stdout || '',
-        stderr: data.stderr || '',
-        exitCode: data.exitCode !== undefined ? data.exitCode : null,
-        timedOut: data.timedOut || false,
-        executionTimeMs: data.executionTimeMs || 0,
-        error: data.error,
-        diagnostics,
-      });
+      setRunResult(result);
 
       // If compilation failed and we have errors, highlight the first error line
-      if (!data.success && diagnostics.length > 0) {
-        const firstErr = diagnostics.find((d) => d.type === 'error') || diagnostics[0];
+      if (!result.success && result.diagnostics.length > 0) {
+        const firstErr = result.diagnostics.find((d) => d.type === 'error') || result.diagnostics[0];
         const targetFile = files.find((f) => f.name === firstErr.file);
         if (targetFile) {
           setActiveFileId(targetFile.id);
@@ -213,7 +185,7 @@ export default function App() {
         success: false,
         phase: 'compilation',
         compiler: compilerOptions.compiler,
-        compileOutput: `Erro de rede ou conexão com o servidor: ${err.message}`,
+        compileOutput: `Erro ao processar execução: ${err.message}`,
         compilationTimeMs: 0,
         stdout: '',
         stderr: '',
@@ -223,7 +195,7 @@ export default function App() {
     } finally {
       setIsRunning(false);
     }
-  }, [isRunning, compilerOptions, files, stdin]);
+  }, [isRunning, compilerOptions, files, stdin, engineMode]);
 
   // Global hotkeys (Ctrl+Enter, F9)
   useEffect(() => {
@@ -273,23 +245,18 @@ export default function App() {
     if (isLoadingAssembly) return;
     setIsLoadingAssembly(true);
     try {
-      const res = await fetch('/api/assembly', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          code: activeFile.content,
-          standard: compilerOptions.standard,
-          optimization: compilerOptions.optimization,
-        }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setAssemblyCode(data.assembly);
+      const res = await generateAssembly(
+        activeFile.content,
+        compilerOptions.standard,
+        compilerOptions.optimization
+      );
+      if (res.success && res.assembly) {
+        setAssemblyCode(res.assembly);
       } else {
-        setAssemblyCode(`// Erro ao gerar Assembly:\n${data.error || 'Falha na compilação'}`);
+        setAssemblyCode(`// Erro ao gerar Assembly:\n${res.error || 'Falha na compilação'}`);
       }
     } catch (err: any) {
-      setAssemblyCode(`// Erro de conexão:\n${err.message}`);
+      setAssemblyCode(`// Erro:\n${err.message}`);
     } finally {
       setIsLoadingAssembly(false);
     }
@@ -301,23 +268,13 @@ export default function App() {
     setIsLoadingAi(true);
     setAiResponse(null);
     try {
-      const res = await fetch('/api/ai-assist', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          code: activeFile.content,
-          output: runResult ? (runResult.compileOutput || runResult.stderr || runResult.stdout) : '',
-          type,
-        }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setAiResponse(data.text);
-      } else {
-        setAiResponse(`Erro ao contatar o assistente: ${data.error}`);
-      }
+      const outputText = runResult
+        ? runResult.compileOutput || runResult.stderr || runResult.stdout
+        : '';
+      const responseText = await getAiAssistance(activeFile.content, outputText, type);
+      setAiResponse(responseText);
     } catch (err: any) {
-      setAiResponse(`Falha na requisição: ${err.message}`);
+      setAiResponse(`Erro: ${err.message}`);
     } finally {
       setIsLoadingAi(false);
     }
@@ -364,7 +321,7 @@ export default function App() {
         }}
         onDownloadProject={handleDownloadProject}
         compilerOptions={compilerOptions}
-        serverReady={serverReady}
+        engineMode={engineMode}
       />
 
       {/* Editor & Console Work Area */}

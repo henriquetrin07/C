@@ -1,12 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   FolderGit2,
   Save,
-  Plus,
   Trash2,
   FolderOpen,
-  Calendar,
   Clock,
   FileCode,
   CheckCircle2,
@@ -14,8 +12,12 @@ import {
   Loader2,
   LogIn,
   Layers,
+  Download,
+  Upload,
+  Database,
 } from 'lucide-react';
 import { User, UserProject, SourceFile } from '../types';
+import { DatabaseClient } from '../utils/database';
 
 interface ProjectManagerModalProps {
   isOpen: boolean;
@@ -31,7 +33,6 @@ export const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({
   isOpen,
   onClose,
   currentUser,
-  authToken,
   currentFiles,
   onOpenAuth,
   onLoadProject,
@@ -42,26 +43,21 @@ export const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({
   const [saveName, setSaveName] = useState('');
   const [saveDescription, setSaveDescription] = useState('');
   const [statusMessage, setStatusMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (isOpen && authToken) {
+    if (isOpen) {
       fetchProjects();
     }
-  }, [isOpen, authToken]);
+  }, [isOpen, currentUser]);
 
   const fetchProjects = async () => {
-    if (!authToken) return;
     setIsLoading(true);
     try {
-      const res = await fetch('/api/projects', {
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setProjects(data.projects || []);
-      }
-    } catch (err) {
+      const userId = currentUser ? currentUser.id : 'guest';
+      const loaded = await DatabaseClient.getProjects(userId);
+      setProjects(loaded);
+    } catch (err: any) {
       console.error('Failed to fetch projects', err);
     } finally {
       setIsLoading(false);
@@ -70,7 +66,7 @@ export const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({
 
   const handleSaveCurrent = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!authToken) {
+    if (!currentUser) {
       onOpenAuth();
       return;
     }
@@ -84,48 +80,35 @@ export const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({
     setStatusMessage(null);
 
     try {
-      const res = await fetch('/api/projects', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({
-          title: saveName.trim(),
-          name: saveName.trim(),
-          description: saveDescription.trim(),
-          files: currentFiles,
-          tags: ['c', 'educational'],
-        }),
+      const res = await DatabaseClient.saveProject(currentUser.id, {
+        title: saveName.trim(),
+        description: saveDescription.trim(),
+        files: currentFiles,
       });
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Erro ao salvar projeto');
-
-      setStatusMessage({ text: 'Projeto salvo com sucesso na sua conta!', type: 'success' });
-      setSaveName('');
-      setSaveDescription('');
-      fetchProjects();
+      if (res.success) {
+        setStatusMessage({ text: 'Projeto salvo no banco de dados com sucesso!', type: 'success' });
+        setSaveName('');
+        setSaveDescription('');
+        await fetchProjects();
+      } else {
+        setStatusMessage({ text: res.error || 'Erro ao salvar projeto.', type: 'error' });
+      }
     } catch (err: any) {
-      setStatusMessage({ text: err.message || 'Erro ao salvar', type: 'error' });
+      setStatusMessage({ text: err.message || 'Erro ao salvar projeto', type: 'error' });
     } finally {
       setIsSaving(false);
     }
   };
 
   const handleDelete = async (id: string, name: string) => {
-    if (!authToken) return;
+    const userId = currentUser ? currentUser.id : 'guest';
     if (!confirm(`Deseja realmente excluir o projeto "${name}"? Esta ação não pode ser desfeita.`)) return;
 
     try {
-      const res = await fetch(`/api/projects/${id}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
-      if (res.ok) {
-        setProjects((prev) => prev.filter((p) => p.id !== id));
-        setStatusMessage({ text: `Projeto "${name}" removido com sucesso.`, type: 'success' });
-      }
+      await DatabaseClient.deleteProject(userId, id);
+      setProjects((prev) => prev.filter((p) => p.id !== id));
+      setStatusMessage({ text: `Projeto "${name}" removido do banco de dados.`, type: 'success' });
     } catch (err) {
       console.error('Failed to delete project', err);
     }
@@ -137,7 +120,46 @@ export const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({
     setStatusMessage({ text: `Projeto "${projectName}" carregado no editor!`, type: 'success' });
     setTimeout(() => {
       onClose();
-    }, 600);
+    }, 500);
+  };
+
+  const handleExportBackup = () => {
+    const userId = currentUser ? currentUser.id : 'guest';
+    const json = DatabaseClient.exportProjectsBackup(userId);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `projetos_c_backup_${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    setStatusMessage({ text: 'Backup exportado com sucesso!', type: 'success' });
+  };
+
+  const handleImportBackup = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const content = event.target?.result as string;
+        const userId = currentUser ? currentUser.id : 'guest';
+        const count = DatabaseClient.importProjectsBackup(userId, content);
+        if (count > 0) {
+          setStatusMessage({ text: `${count} projeto(s) importados para o banco de dados!`, type: 'success' });
+          await fetchProjects();
+        } else {
+          setStatusMessage({ text: 'Nenhum projeto válido encontrado no arquivo.', type: 'error' });
+        }
+      } catch {
+        setStatusMessage({ text: 'Falha ao ler o arquivo JSON.', type: 'error' });
+      }
+    };
+    reader.readAsText(file);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   if (!isOpen) return null;
@@ -149,14 +171,19 @@ export const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-950/50">
           <div className="flex items-center space-x-2.5">
             <div className="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
-              <FolderGit2 className="w-4 h-4" />
+              <Database className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-slate-100">Gerenciador de Projetos em C</h3>
+              <h3 className="text-sm font-bold text-slate-100 flex items-center space-x-2">
+                <span>Banco de Dados de Projetos em C</span>
+                <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-mono">
+                  Ativo & Conectado
+                </span>
+              </h3>
               <p className="text-[11px] text-slate-400">
                 {currentUser
-                  ? `Conectado como @${currentUser.username} • Seus códigos salvos na nuvem`
-                  : 'Salve seu código e acesse de qualquer lugar'}
+                  ? `Conta @${currentUser.username} • Seus códigos salvos com segurança`
+                  : 'Salve seus códigos na sua conta ou exporte seus arquivos'}
               </p>
             </div>
           </div>
@@ -195,9 +222,9 @@ export const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({
                 <LogIn className="w-6 h-6" />
               </div>
               <div>
-                <h4 className="text-sm font-bold text-slate-100">Entre na sua Conta para Salvar</h4>
+                <h4 className="text-sm font-bold text-slate-100">Crie sua Conta para Salvar seus Projetos</h4>
                 <p className="text-xs text-slate-300 max-w-md mx-auto mt-1">
-                  Crie uma conta gratuita em 5 segundos apenas com usuário e senha para salvar seus programas em C e nunca perder suas lições e códigos!
+                  Cadastre-se gratuitamente em segundos (somente usuário e senha) para armazenar todos os seus programas em C com segurança no banco de dados!
                 </p>
               </div>
               <button
@@ -213,7 +240,7 @@ export const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({
             <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-4 space-y-3">
               <div className="flex items-center space-x-2 text-xs font-semibold text-slate-200">
                 <Save className="w-4 h-4 text-emerald-400" />
-                <span>Salvar os Arquivos Atuais como Novo Projeto</span>
+                <span>Salvar Arquivos Atuais no Banco de Dados</span>
               </div>
               <form onSubmit={handleSaveCurrent} className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div className="md:col-span-1">
@@ -230,7 +257,7 @@ export const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({
                     type="text"
                     value={saveDescription}
                     onChange={(e) => setSaveDescription(e.target.value)}
-                    placeholder="Breve descrição ou anotação (opcional)"
+                    placeholder="Breve descrição (opcional)"
                     className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-100 placeholder-slate-500 text-xs focus:outline-none focus:border-emerald-500"
                   />
                 </div>
@@ -245,7 +272,7 @@ export const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({
                     ) : (
                       <Save className="w-3.5 h-3.5" />
                     )}
-                    <span>Salvar Projeto ({currentFiles.length} arquivos)</span>
+                    <span>Salvar no Banco ({currentFiles.length} arquivos)</span>
                   </button>
                 </div>
               </form>
@@ -257,29 +284,55 @@ export const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({
             <div className="flex items-center justify-between">
               <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center space-x-1.5">
                 <Layers className="w-4 h-4 text-indigo-400" />
-                <span>Meus Projetos Salvos ({projects.length})</span>
+                <span>Projetos Salvos ({projects.length})</span>
               </h4>
-              {currentUser && (
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={handleExportBackup}
+                  disabled={projects.length === 0}
+                  className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs flex items-center space-x-1 disabled:opacity-40"
+                  title="Baixar backup de todos os projetos em JSON"
+                >
+                  <Download className="w-3.5 h-3.5 text-sky-400" />
+                  <span>Exportar JSON</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs flex items-center space-x-1"
+                  title="Importar projetos de um backup JSON"
+                >
+                  <Upload className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Importar</span>
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".json"
+                  onChange={handleImportBackup}
+                  className="hidden"
+                />
                 <button
                   onClick={fetchProjects}
-                  className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+                  className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors ml-1"
                 >
-                  Atualizar lista
+                  Atualizar
                 </button>
-              )}
+              </div>
             </div>
 
             {isLoading ? (
               <div className="flex items-center justify-center p-8 space-x-2 text-slate-400 text-xs">
                 <Loader2 className="w-4 h-4 animate-spin text-amber-500" />
-                <span>Carregando seus projetos...</span>
+                <span>Carregando projetos do banco de dados...</span>
               </div>
             ) : projects.length === 0 ? (
               <div className="text-center p-8 border border-dashed border-slate-800 rounded-xl space-y-2 bg-slate-950/20">
                 <FileCode className="w-8 h-8 text-slate-600 mx-auto" />
-                <p className="text-xs font-medium text-slate-400">Nenhum projeto salvo ainda</p>
+                <p className="text-xs font-medium text-slate-400">Nenhum projeto salvo no banco ainda</p>
                 <p className="text-[11px] text-slate-500 max-w-xs mx-auto">
-                  Escreva seu código no editor e use o campo acima para salvar seu projeto com um nome e descrição.
+                  Escreva seu código no editor e use o formulário acima para salvar com segurança.
                 </p>
               </div>
             ) : (
@@ -297,7 +350,7 @@ export const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({
                         <button
                           onClick={() => handleDelete(proj.id, proj.title || proj.name || 'Projeto')}
                           className="text-slate-500 hover:text-rose-400 p-1 rounded-md transition-colors"
-                          title="Excluir projeto"
+                          title="Excluir projeto do banco"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>

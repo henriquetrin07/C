@@ -28,6 +28,7 @@ import {
   generateAssembly,
   EngineMode,
 } from './utils/cRunner';
+import { DatabaseClient } from './utils/database';
 
 const STORAGE_KEY_FILES = 'c_ide_files_v1';
 const STORAGE_KEY_OPTIONS = 'c_ide_options_v1';
@@ -134,24 +135,14 @@ export default function App() {
   // Check user session on startup
   useEffect(() => {
     const checkSession = async () => {
-      const token = localStorage.getItem(STORAGE_KEY_TOKEN);
-      if (!token) return;
       try {
-        const res = await fetch('/api/auth/me', {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setCurrentUser(data.user);
-          setAuthToken(token);
-        } else {
-          // Token invalid or expired
-          localStorage.removeItem(STORAGE_KEY_TOKEN);
-          setAuthToken(null);
-          setCurrentUser(null);
+        const user = await DatabaseClient.getCurrentUser();
+        if (user) {
+          setCurrentUser(user);
+          setAuthToken(DatabaseClient.getToken());
         }
       } catch {
-        // Backend might be warming up
+        // Safe fallback
       }
     };
 
@@ -429,6 +420,7 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    DatabaseClient.clearSession();
     setCurrentUser(null);
     setAuthToken(null);
     showToast('Você saiu da sua conta. Seus códigos permanecem no navegador.', 'info');

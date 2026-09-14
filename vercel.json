@@ -21,6 +21,26 @@
       "destination": "/api/ai-diagnose"
     },
     {
+      "source": "/api/auth/register",
+      "destination": "/api/auth/register"
+    },
+    {
+      "source": "/api/auth/login",
+      "destination": "/api/auth/login"
+    },
+    {
+      "source": "/api/auth/me",
+      "destination": "/api/auth/me"
+    },
+    {
+      "source": "/api/projects/:id",
+      "destination": "/api/projects/[id]"
+    },
+    {
+      "source": "/api/projects",
+      "destination": "/api/projects"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

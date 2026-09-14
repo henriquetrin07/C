@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
+import os from 'os';
 
 export interface StoredUser {
   id: string;
@@ -22,9 +23,21 @@ export interface StoredProject {
   createdAt: string;
 }
 
-const DATA_DIR = path.join(process.cwd(), 'data');
-const USERS_FILE = path.join(DATA_DIR, 'users.json');
-const PROJECTS_FILE = path.join(DATA_DIR, 'projects.json');
+const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+
+function resolveDataDir(): string {
+  if (process.env.DATA_DIR) {
+    return process.env.DATA_DIR;
+  }
+  if (isServerless) {
+    return path.join(os.tmpdir(), 'c_compiler_database');
+  }
+  return path.join(process.cwd(), 'data');
+}
+
+let DATA_DIR = resolveDataDir();
+let USERS_FILE = path.join(DATA_DIR, 'users.json');
+let PROJECTS_FILE = path.join(DATA_DIR, 'projects.json');
 
 // In-memory cache with file persistence
 let usersCache: StoredUser[] = [];
@@ -34,7 +47,24 @@ let isInitialized = false;
 async function ensureDataDir() {
   try {
     await fs.mkdir(DATA_DIR, { recursive: true });
-  } catch {}
+  } catch (err: any) {
+    if (err.code === 'EROFS' || err.code === 'EACCES') {
+      DATA_DIR = path.join(os.tmpdir(), 'c_compiler_database');
+      USERS_FILE = path.join(DATA_DIR, 'users.json');
+      PROJECTS_FILE = path.join(DATA_DIR, 'projects.json');
+      await fs.mkdir(DATA_DIR, { recursive: true }).catch(() => {});
+    }
+  }
+}
+
+async function atomicWriteFile(filePath: string, content: string) {
+  const tmpPath = `${filePath}.${Date.now()}.${Math.random().toString(36).substring(2, 7)}.tmp`;
+  try {
+    await fs.writeFile(tmpPath, content, 'utf8');
+    await fs.rename(tmpPath, filePath);
+  } catch {
+    await fs.writeFile(filePath, content, 'utf8').catch(() => {});
+  }
 }
 
 export async function initDatabase() {
@@ -46,7 +76,7 @@ export async function initDatabase() {
     usersCache = JSON.parse(usersData);
   } catch {
     usersCache = [];
-    await fs.writeFile(USERS_FILE, JSON.stringify(usersCache, null, 2), 'utf8').catch(() => {});
+    await atomicWriteFile(USERS_FILE, JSON.stringify(usersCache, null, 2)).catch(() => {});
   }
 
   try {
@@ -54,7 +84,7 @@ export async function initDatabase() {
     projectsCache = JSON.parse(projectsData);
   } catch {
     projectsCache = [];
-    await fs.writeFile(PROJECTS_FILE, JSON.stringify(projectsCache, null, 2), 'utf8').catch(() => {});
+    await atomicWriteFile(PROJECTS_FILE, JSON.stringify(projectsCache, null, 2)).catch(() => {});
   }
 
   isInitialized = true;
@@ -63,7 +93,7 @@ export async function initDatabase() {
 async function saveUsers() {
   await ensureDataDir();
   try {
-    await fs.writeFile(USERS_FILE, JSON.stringify(usersCache, null, 2), 'utf8');
+    await atomicWriteFile(USERS_FILE, JSON.stringify(usersCache, null, 2));
   } catch (err) {
     console.error('Failed to persist users:', err);
   }
@@ -72,7 +102,7 @@ async function saveUsers() {
 async function saveProjects() {
   await ensureDataDir();
   try {
-    await fs.writeFile(PROJECTS_FILE, JSON.stringify(projectsCache, null, 2), 'utf8');
+    await atomicWriteFile(PROJECTS_FILE, JSON.stringify(projectsCache, null, 2));
   } catch (err) {
     console.error('Failed to persist projects:', err);
   }
@@ -86,12 +116,16 @@ export function hashPassword(password: string, salt?: string): { hash: string; s
 }
 
 export function verifyPassword(password: string, hash: string, salt: string): boolean {
-  const test = crypto.scryptSync(password, salt, 32).toString('hex');
-  return test === hash;
+  try {
+    const test = crypto.scryptSync(password, salt, 32).toString('hex');
+    return test === hash;
+  } catch {
+    return false;
+  }
 }
 
-// Tokens - Simple secure signed hex string
-const SECRET = 'c_ide_edu_secret_' + (process.env.APP_SECRET || '2026_c_compiler');
+// Tokens - Secure HMAC signed base64 string
+const SECRET = 'c_ide_edu_secret_' + (process.env.APP_SECRET || '2026_c_compiler_secure_token');
 
 export function generateToken(user: StoredUser): string {
   const payload = `${user.id}:${user.username}:${Date.now()}`;
@@ -109,16 +143,19 @@ export function verifyToken(token: string): { userId: string; username: string }
     const expectedSig = crypto.createHmac('sha256', SECRET).update(payload).digest('hex');
     if (expectedSig !== sig) return null;
 
-    // Check if user still exists in memory
-    const user = usersCache.find((u) => u.id === userId);
-    if (!user) return null;
+    // Check expiration (30 days)
+    const tokenTime = parseInt(timestamp, 10);
+    if (isNaN(tokenTime) || Date.now() - tokenTime > 30 * 24 * 60 * 60 * 1000) {
+      return null;
+    }
+
     return { userId, username };
   } catch {
     return null;
   }
 }
 
-// User CRUD
+// User Operations
 export async function findUserByUsername(username: string): Promise<StoredUser | undefined> {
   await initDatabase();
   const normalized = username.trim().toLowerCase();
@@ -158,8 +195,8 @@ export async function createUser(username: string, password: string): Promise<St
         content: `#include <stdio.h>
 
 int main() {
-    // Bem-vindo ao C Web IDE Educacional!
-    printf("Olá, mundo! Comecei a programar em C.\\n");
+    // Bem-vindo ao C Web IDE & Compilador Online!
+    printf("Olá, mundo! Minha conta e projetos estão salvos.\\n");
     printf("Explore a trilha 'Aprenda C do Zero' para ver as lições.\\n");
     return 0;
 }
@@ -178,7 +215,7 @@ int main() {
   return newUser;
 }
 
-// Projects CRUD
+// Projects Operations
 export async function getUserProjects(userId: string): Promise<StoredProject[]> {
   await initDatabase();
   return projectsCache
@@ -207,14 +244,17 @@ export async function createProject(
     userId,
     title: data.title || 'Projeto sem título',
     description: data.description || '',
-    files: data.files && data.files.length > 0 ? data.files : [
-      {
-        id: 'f_main',
-        name: 'main.c',
-        content: '#include <stdio.h>\n\nint main() {\n    printf("Novo programa em C\\n");\n    return 0;\n}\n',
-        isMain: true,
-      },
-    ],
+    files:
+      data.files && data.files.length > 0
+        ? data.files
+        : [
+            {
+              id: 'f_main',
+              name: 'main.c',
+              content: '#include <stdio.h>\n\nint main() {\n    printf("Novo programa em C\\n");\n    return 0;\n}\n',
+              isMain: true,
+            },
+          ],
     stdin: data.stdin || '',
     compilerOptions: data.compilerOptions,
     updatedAt: new Date().toISOString(),

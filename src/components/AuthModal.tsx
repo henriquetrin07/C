@@ -12,6 +12,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { User as UserType } from '../types';
+import { DatabaseClient } from '../utils/database';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -60,37 +61,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setIsLoading(true);
 
     try {
-      const endpoint = isRegister ? '/api/auth/register' : '/api/auth/login';
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username: username.trim(),
-          password: password.trim(),
-        }),
-      });
+      const res = isRegister
+        ? await DatabaseClient.register(username.trim(), password.trim())
+        : await DatabaseClient.login(username.trim(), password.trim());
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Falha na autenticação');
+      if (!res.success) {
+        setError(res.error || 'Falha ao processar solicitação.');
+        return;
       }
 
       setSuccess(
         isRegister
-          ? 'Conta criada com sucesso! Você já está conectado.'
-          : 'Login efetuado com sucesso!'
+          ? 'Conta criada com sucesso no banco de dados! Você já está conectado.'
+          : 'Login efetuado com sucesso! Carregando seus projetos...'
       );
 
-      // Save token to localStorage for persistent session
-      localStorage.setItem('c_ide_auth_token', data.token);
-
       setTimeout(() => {
-        onLoginSuccess(data.user, data.token);
+        onLoginSuccess(res.user, res.token);
         onClose();
-      }, 700);
+      }, 600);
     } catch (err: any) {
-      setError(err.message || 'Ocorreu um erro ao processar. Tente novamente.');
+      setError(err?.message || 'Ocorreu um erro ao processar. Tente novamente.');
     } finally {
       setIsLoading(false);
     }
@@ -158,7 +149,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    localStorage.removeItem('c_ide_auth_token');
+                    DatabaseClient.clearSession();
                     onLogout();
                     onClose();
                   }}

@@ -29,6 +29,7 @@ import {
   EngineMode,
 } from './utils/cRunner';
 import { DatabaseClient } from './utils/database';
+import { detectStdinRequirements } from './utils/stdinHelper';
 
 const STORAGE_KEY_FILES = 'c_ide_files_v1';
 const STORAGE_KEY_OPTIONS = 'c_ide_options_v1';
@@ -82,6 +83,7 @@ export default function App() {
 
   // Terminal active tab state ('output' | 'stdin' | 'diagnostics' | 'assembly' | 'ai')
   const [terminalTab, setTerminalTab] = useState<'output' | 'stdin' | 'diagnostics' | 'assembly' | 'ai'>('output');
+  const [isAwaitingInput, setIsAwaitingInput] = useState<boolean>(false);
 
   // AI Diagnostic State
   const [diagnosis, setDiagnosis] = useState<AIDiagnosis | null>(null);
@@ -202,81 +204,101 @@ export default function App() {
     );
   };
 
-  // Run C compilation and execution
-  const handleRun = useCallback(async () => {
-    if (isRunning) return;
-    setIsRunning(true);
-    setHighlightedLine(null);
+  // Run C compilation and execution with interactive stdin support
+  const handleRun = useCallback(
+    async (overrideStdin?: string, skipInputPrompt?: boolean) => {
+      if (isRunning) return;
 
-    try {
-      const { result, usedEngine } = await executeCCode(
-        files,
-        stdin,
-        compilerOptions,
-        engineMode
-      );
-
-      if (usedEngine !== engineMode) {
-        setEngineMode(usedEngine);
+      const actualStdin = overrideStdin !== undefined ? overrideStdin : stdin;
+      if (overrideStdin !== undefined && overrideStdin !== stdin) {
+        setStdin(overrideStdin);
       }
 
-      setRunResult(result);
+      // Check if C code has scanf/getchar/fgets and no stdin has been provided yet
+      const stdinReq = detectStdinRequirements(files);
+      if (stdinReq.requiresInput && !actualStdin.trim() && !skipInputPrompt) {
+        setTerminalTab('output');
+        setIsAwaitingInput(true);
+        setRunResult(null);
+        return;
+      }
 
-      // If compilation failed or runtime error occurred, automatically diagnose with AI
-      const hasError =
-        !result.success ||
-        (result.exitCode !== 0 && result.exitCode !== null) ||
-        result.timedOut;
+      setIsAwaitingInput(false);
+      setIsRunning(true);
+      setHighlightedLine(null);
+      setTerminalTab('output');
 
-      if (hasError) {
-        setIsLoadingDiagnosis(true);
-        // Highlight first error line in editor
-        if (result.diagnostics.length > 0) {
-          const firstErr =
-            result.diagnostics.find((d) => d.type === 'error') || result.diagnostics[0];
-          const targetFile = files.find((f) => f.name === firstErr.file);
-          if (targetFile) {
-            setActiveFileId(targetFile.id);
-          }
-          setHighlightedLine(firstErr.line);
+      try {
+        const { result, usedEngine } = await executeCCode(
+          files,
+          actualStdin,
+          compilerOptions,
+          engineMode
+        );
+
+        if (usedEngine !== engineMode) {
+          setEngineMode(usedEngine);
         }
 
-        analyzeErrorWithAI(activeFile, files, result)
+        setRunResult(result);
+
+        // If compilation failed or runtime error occurred, automatically diagnose with AI
+        const hasError =
+          !result.success ||
+          (result.exitCode !== 0 && result.exitCode !== null) ||
+          result.timedOut;
+
+        if (hasError) {
+          setIsLoadingDiagnosis(true);
+          // Highlight first error line in editor
+          if (result.diagnostics.length > 0) {
+            const firstErr =
+              result.diagnostics.find((d) => d.type === 'error') || result.diagnostics[0];
+            const targetFile = files.find((f) => f.name === firstErr.file);
+            if (targetFile) {
+              setActiveFileId(targetFile.id);
+            }
+            setHighlightedLine(firstErr.line);
+          }
+
+          analyzeErrorWithAI(activeFile, files, result)
+            .then((diag) => {
+              setDiagnosis(diag);
+              setIsLoadingDiagnosis(false);
+            })
+            .catch(() => {
+              setIsLoadingDiagnosis(false);
+            });
+        } else {
+          // Successful clean run
+          setDiagnosis(null);
+        }
+      } catch (err: any) {
+        const fakeErrResult: RunResult = {
+          success: false,
+          phase: 'compilation',
+          compiler: compilerOptions.compiler,
+          compileOutput: `Erro ao processar execução: ${err.message}`,
+          compilationTimeMs: 0,
+          stdout: '',
+          stderr: '',
+          exitCode: -1,
+          diagnostics: [],
+        };
+        setRunResult(fakeErrResult);
+        setIsLoadingDiagnosis(true);
+        analyzeErrorWithAI(activeFile, files, fakeErrResult)
           .then((diag) => {
             setDiagnosis(diag);
             setIsLoadingDiagnosis(false);
           })
-          .catch(() => {
-            setIsLoadingDiagnosis(false);
-          });
-      } else {
-        // Successful clean run
-        setDiagnosis(null);
+          .catch(() => setIsLoadingDiagnosis(false));
+      } finally {
+        setIsRunning(false);
       }
-    } catch (err: any) {
-      const fakeErrResult: RunResult = {
-        success: false,
-        phase: 'compilation',
-        compiler: compilerOptions.compiler,
-        compileOutput: `Erro ao processar execução: ${err.message}`,
-        compilationTimeMs: 0,
-        stdout: '',
-        stderr: '',
-        exitCode: -1,
-        diagnostics: [],
-      };
-      setRunResult(fakeErrResult);
-      setIsLoadingDiagnosis(true);
-      analyzeErrorWithAI(activeFile, files, fakeErrResult)
-        .then((diag) => {
-          setDiagnosis(diag);
-          setIsLoadingDiagnosis(false);
-        })
-        .catch(() => setIsLoadingDiagnosis(false));
-    } finally {
-      setIsRunning(false);
-    }
-  }, [isRunning, compilerOptions, files, stdin, engineMode, activeFile]);
+    },
+    [isRunning, compilerOptions, files, stdin, engineMode, activeFile]
+  );
 
   // Debug action (OnlineGDB style): runs and switches straight to the AI diagnosis / inspection tab
   const handleDebug = async () => {
@@ -347,6 +369,7 @@ export default function App() {
       setActiveFileId(EXAMPLES[0].files[0].id);
       setStdin('');
       setRunResult(null);
+      setIsAwaitingInput(false);
       setHighlightedLine(null);
       setAssemblyCode(null);
       setDiagnosis(null);
@@ -363,6 +386,7 @@ export default function App() {
       setStdin('');
     }
     setRunResult(null);
+    setIsAwaitingInput(false);
     setHighlightedLine(null);
     setAssemblyCode(null);
     setDiagnosis(null);
@@ -618,7 +642,10 @@ export default function App() {
               isRunning={isRunning}
               stdin={stdin}
               onStdinChange={setStdin}
-              onClearOutput={() => setRunResult(null)}
+              onClearOutput={() => {
+                setRunResult(null);
+                setIsAwaitingInput(false);
+              }}
               onSelectDiagnosticLine={handleSelectDiagnosticLine}
               assemblyCode={assemblyCode}
               isLoadingAssembly={isLoadingAssembly}
@@ -630,6 +657,10 @@ export default function App() {
               onRequestReanalysis={handleRequestReanalysis}
               activeTab={terminalTab}
               onTabChange={setTerminalTab}
+              files={files}
+              onRun={handleRun}
+              isAwaitingInput={isAwaitingInput}
+              onCancelAwaitingInput={() => setIsAwaitingInput(false)}
             />
           </div>
         </div>

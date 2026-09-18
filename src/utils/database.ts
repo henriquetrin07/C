@@ -33,7 +33,6 @@ async function hashPasswordWithSalt(password: string, salt: string): Promise<str
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
   }
-  // Fallback simple hash if subtle crypto is not available
   let hash = 0;
   const str = password + salt;
   for (let i = 0; i < str.length; i++) {
@@ -113,7 +112,7 @@ export const DatabaseClient = {
     }
   },
 
-  // Register user into Firebase Firestore
+  // Register user into both Shared Server Database and Firebase Firestore
   async register(
     username: string,
     password: string
@@ -139,13 +138,50 @@ export const DatabaseClient = {
     const usernameLower = cleanUsername.toLowerCase();
     const salt = generateSalt();
     const passwordHash = await hashPasswordWithSalt(password, salt);
+    const createdAt = new Date().toISOString();
 
+    let serverUser: User | null = null;
+    let serverToken: string = '';
+
+    // 1. Attempt to register with shared server backend
     try {
-      // 1. Check if user already exists in Firestore
+      const sRes = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: cleanUsername, password }),
+      });
+
+      if (sRes.ok) {
+        const sData = await sRes.json();
+        if (sData.success) {
+          serverUser = sData.user;
+          serverToken = sData.token;
+        }
+      } else if (sRes.status === 409) {
+        return {
+          success: false,
+          user: null as any,
+          token: '',
+          error: 'Este nome de usuário já está cadastrado. Entre com sua senha ou escolha outro nome.',
+        };
+      }
+    } catch (sErr) {
+      console.warn('Server register request notice:', sErr);
+    }
+
+    const userId = serverUser?.id || 'u_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+    const user: User = {
+      id: userId,
+      username: cleanUsername,
+      createdAt,
+    };
+    const token = serverToken || `fb_tok_${userId}_${Date.now()}`;
+
+    // 2. Save user to Firebase Firestore
+    try {
       const userDocRef = doc(db, 'users', usernameLower);
       const userSnap = await getDoc(userDocRef);
-
-      if (userSnap.exists()) {
+      if (userSnap.exists() && !serverUser) {
         return {
           success: false,
           user: null as any,
@@ -154,10 +190,6 @@ export const DatabaseClient = {
         };
       }
 
-      const userId = 'u_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
-      const createdAt = new Date().toISOString();
-
-      // 2. Save user to Firestore Cloud Database
       await setDoc(userDocRef, {
         id: userId,
         username: cleanUsername,
@@ -167,16 +199,7 @@ export const DatabaseClient = {
         createdAt,
       });
 
-      const user: User = {
-        id: userId,
-        username: cleanUsername,
-        createdAt,
-      };
-
-      const token = `fb_tok_${userId}_${Date.now()}`;
-      this.setSession(user, token);
-
-      // 3. Create initial welcome project in Firestore
+      // 3. Create initial welcome project
       const initialProjectId = 'p_' + Date.now() + '_welcome';
       const initialProject: UserProject = {
         id: initialProjectId,
@@ -205,60 +228,31 @@ int main() {
         updatedAt: createdAt,
       };
 
-      try {
-        await setDoc(doc(db, 'projects', initialProjectId), {
-          ...initialProject,
-          username: cleanUsername,
-        });
-      } catch (projErr) {
-        console.warn('Initial project cloud save notice:', projErr);
-      }
+      await setDoc(doc(db, 'projects', initialProjectId), {
+        ...initialProject,
+        username: cleanUsername,
+      }).catch(() => {});
 
-      // Mirror to local cache for instant offline access
-      const localUsers = getLocalUsers();
-      localUsers.push({ id: userId, username: cleanUsername, passwordHash, salt, createdAt });
-      saveLocalUsers(localUsers);
-
+      // Mirror to local cache
       const localProjects = getLocalProjects();
       localProjects.unshift(initialProject);
       saveLocalProjects(localProjects);
-
-      return { success: true, user, token };
-    } catch (err: any) {
-      console.error('Firebase register error:', err);
-
-      // Fallback to local storage if Firestore connection fails
-      const localUsers = getLocalUsers();
-      if (localUsers.some((u) => u.username.toLowerCase() === usernameLower)) {
-        return {
-          success: false,
-          user: null as any,
-          token: '',
-          error: 'Este nome de usuário já existe no banco de dados local.',
-        };
-      }
-
-      const userId = 'u_local_' + Date.now();
-      const createdAt = new Date().toISOString();
-      const localUserRec: LocalUserRecord = {
-        id: userId,
-        username: cleanUsername,
-        passwordHash,
-        salt,
-        createdAt,
-      };
-      localUsers.push(localUserRec);
-      saveLocalUsers(localUsers);
-
-      const user: User = { id: userId, username: cleanUsername, createdAt };
-      const token = `loc_tok_${userId}_${Date.now()}`;
-      this.setSession(user, token);
-
-      return { success: true, user, token };
+    } catch (fbErr) {
+      console.warn('Firestore register notice:', fbErr);
     }
+
+    // Mirror to local cache
+    const localUsers = getLocalUsers();
+    if (!localUsers.some((u) => u.username.toLowerCase() === usernameLower)) {
+      localUsers.push({ id: userId, username: cleanUsername, passwordHash, salt, createdAt });
+      saveLocalUsers(localUsers);
+    }
+
+    this.setSession(user, token);
+    return { success: true, user, token };
   },
 
-  // Login user from Firebase Firestore (allows ANY person from ANY device to log in)
+  // Login user: checks both Shared Server Database and Firebase Firestore
   async login(
     username: string,
     password: string
@@ -275,8 +269,53 @@ int main() {
 
     const usernameLower = cleanUsername.toLowerCase();
 
+    // 1. Try Shared Server Database first (accessible from all devices)
     try {
-      // 1. Look up user in Firestore Cloud Database
+      const serverRes = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: cleanUsername, password }),
+      });
+
+      if (serverRes.ok) {
+        const data = await serverRes.json();
+        if (data.success && data.user && data.token) {
+          this.setSession(data.user, data.token);
+
+          // Sync user record to Firestore asynchronously
+          (async () => {
+            try {
+              const userDocRef = doc(db, 'users', usernameLower);
+              const snap = await getDoc(userDocRef);
+              if (!snap.exists()) {
+                const salt = generateSalt();
+                const passwordHash = await hashPasswordWithSalt(password, salt);
+                await setDoc(userDocRef, {
+                  id: data.user.id,
+                  username: data.user.username,
+                  usernameLower,
+                  passwordHash,
+                  salt,
+                  createdAt: data.user.createdAt,
+                });
+              }
+            } catch {}
+          })();
+
+          return { success: true, user: data.user, token: data.token };
+        }
+      } else if (serverRes.status === 401) {
+        const errData = await serverRes.json().catch(() => ({}));
+        if (errData.error && errData.error.includes('incorret')) {
+          // If server verified that user exists and password was wrong, return immediately
+        }
+      }
+    } catch (sErr) {
+      console.warn('Server login request failed, checking Firestore:', sErr);
+    }
+
+    // 2. Check Firebase Firestore Cloud Database
+    try {
       const userDocRef = doc(db, 'users', usernameLower);
       const userSnap = await getDoc(userDocRef);
 
@@ -287,7 +326,6 @@ int main() {
 
         const calculatedHash = await hashPasswordWithSalt(password, salt);
 
-        // Verify password
         if (calculatedHash === expectedHash) {
           const user: User = {
             id: data.id,
@@ -297,27 +335,12 @@ int main() {
           const token = `fb_tok_${user.id}_${Date.now()}`;
           this.setSession(user, token);
 
-          // Update local cache
-          const localUsers = getLocalUsers();
-          const existingIdx = localUsers.findIndex((u) => u.username.toLowerCase() === usernameLower);
-          if (existingIdx >= 0) {
-            localUsers[existingIdx] = {
-              id: user.id,
-              username: user.username,
-              passwordHash: expectedHash,
-              salt,
-              createdAt: user.createdAt,
-            };
-          } else {
-            localUsers.push({
-              id: user.id,
-              username: user.username,
-              passwordHash: expectedHash,
-              salt,
-              createdAt: user.createdAt,
-            });
-          }
-          saveLocalUsers(localUsers);
+          // Register this user on the server if not already there
+          fetch('/api/auth/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: cleanUsername, password }),
+          }).catch(() => {});
 
           return { success: true, user, token };
         } else {
@@ -330,10 +353,10 @@ int main() {
         }
       }
     } catch (firestoreErr) {
-      console.warn('Firestore lookup error, attempting local/server check:', firestoreErr);
+      console.warn('Firestore lookup notice:', firestoreErr);
     }
 
-    // 2. Fallback check in local users cache
+    // 3. Fallback check in local users cache
     const localUsers = getLocalUsers();
     const localMatch = localUsers.find((u) => u.username.toLowerCase() === usernameLower);
 
@@ -347,32 +370,22 @@ int main() {
         };
         const token = `loc_tok_${user.id}_${Date.now()}`;
         this.setSession(user, token);
+
+        // Sync to server and Firestore in background
+        fetch('/api/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: cleanUsername, password }),
+        }).catch(() => {});
+
         return { success: true, user, token };
       }
       return {
         success: false,
         user: null as any,
         token: '',
-        error: 'Senha incorreta.',
+        error: 'Senha incorreta. Verifique os caracteres e tente novamente.',
       };
-    }
-
-    // 3. Fallback check with server API if available
-    try {
-      const serverRes = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: cleanUsername, password }),
-      });
-      if (serverRes.ok) {
-        const data = await serverRes.json();
-        if (data.success && data.user && data.token) {
-          this.setSession(data.user, data.token);
-          return { success: true, user: data.user, token: data.token };
-        }
-      }
-    } catch {
-      // Server not reachable
     }
 
     return {
@@ -391,7 +404,6 @@ int main() {
     const cached = this.getCachedUser();
     if (cached) return cached;
 
-    // If server session exists, query it
     try {
       const res = await fetch('/api/auth/me', {
         headers: { Authorization: `Bearer ${token}` },
@@ -410,7 +422,7 @@ int main() {
     return null;
   },
 
-  // Get all projects for a user from Firestore + local cache
+  // Get all projects for a user from Firestore + Server API + local cache
   async getProjects(userId: string): Promise<UserProject[]> {
     const projectMap = new Map<string, UserProject>();
 
@@ -429,7 +441,32 @@ int main() {
       console.warn('Firestore getProjects warning:', err);
     }
 
-    // 2. Also check local cache
+    // 2. Get projects from Server API
+    const token = this.getToken();
+    if (token) {
+      try {
+        const sRes = await fetch('/api/projects', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (sRes.ok) {
+          const sData = await sRes.json();
+          if (sData.success && Array.isArray(sData.projects)) {
+            for (const sp of sData.projects) {
+              if (!projectMap.has(sp.id)) {
+                projectMap.set(sp.id, {
+                  ...sp,
+                  name: sp.name || sp.title,
+                });
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Server getProjects warning:', err);
+      }
+    }
+
+    // 3. Also merge from local cache
     const localProjects = getLocalProjects().filter((p) => p.userId === userId);
     for (const lp of localProjects) {
       if (!projectMap.has(lp.id)) {
@@ -445,7 +482,7 @@ int main() {
     return merged;
   },
 
-  // Save or update a project in Firestore Cloud Database
+  // Save or update a project in Firestore Cloud Database & Server
   async saveProject(
     userId: string,
     data: {
@@ -484,7 +521,20 @@ int main() {
       console.warn('Firestore project save warning:', err);
     }
 
-    // 2. Save to local cache
+    // 2. Save to Server API
+    const token = this.getToken();
+    if (token) {
+      fetch('/api/projects', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(project),
+      }).catch(() => {});
+    }
+
+    // 3. Save to local cache
     const local = getLocalProjects();
     const existingIdx = local.findIndex((p) => p.id === projectId);
     if (existingIdx >= 0) {
@@ -501,12 +551,20 @@ int main() {
     return { success: true, project };
   },
 
-  // Delete project from Firestore Cloud Database
+  // Delete project from Firestore Cloud Database & Server
   async deleteProject(userId: string, projectId: string): Promise<boolean> {
     try {
       await deleteDoc(doc(db, 'projects', projectId));
     } catch (err) {
       console.warn('Firestore project delete warning:', err);
+    }
+
+    const token = this.getToken();
+    if (token) {
+      fetch(`/api/projects/${projectId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      }).catch(() => {});
     }
 
     const local = getLocalProjects().filter(
@@ -555,7 +613,6 @@ int main() {
           updatedAt: new Date().toISOString(),
         };
 
-        // Save to Firestore asynchronously
         setDoc(doc(db, 'projects', newProj.id), newProj).catch(() => {});
 
         localProjects.unshift(newProj);

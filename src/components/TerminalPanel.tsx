@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   Terminal,
   Keyboard,
@@ -10,13 +10,14 @@ import {
   Copy,
   Check,
   Clock,
-  ShieldAlert,
   ArrowRight,
-  ExternalLink,
+  CornerDownLeft,
+  RotateCcw,
 } from 'lucide-react';
 import { RunResult, SourceFile, AIDiagnosis } from '../types';
 import { formatDuration } from '../utils/parser';
 import { AIDiagnosisPanel } from './AIDiagnosisPanel';
+import { detectStdinRequirements, interleaveStdoutAndStdin } from '../utils/stdinHelper';
 
 interface TerminalPanelProps {
   runResult: RunResult | null;
@@ -36,6 +37,11 @@ interface TerminalPanelProps {
   onRequestReanalysis: (customQuestion?: string) => void;
   activeTab: 'output' | 'stdin' | 'diagnostics' | 'assembly' | 'ai';
   onTabChange: (tab: 'output' | 'stdin' | 'diagnostics' | 'assembly' | 'ai') => void;
+  // Interactive execution props
+  files?: SourceFile[];
+  onRun?: (overrideStdin?: string, skipInputPrompt?: boolean) => void | Promise<void>;
+  isAwaitingInput?: boolean;
+  onCancelAwaitingInput?: () => void;
 }
 
 export const TerminalPanel: React.FC<TerminalPanelProps> = ({
@@ -55,13 +61,47 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
   onRequestReanalysis,
   activeTab,
   onTabChange,
+  files,
+  onRun,
+  isAwaitingInput = false,
+  onCancelAwaitingInput,
 }) => {
   const [copied, setCopied] = useState(false);
+  const [consoleInput, setConsoleInput] = useState('');
+  const [inputHistory, setInputHistory] = useState<string[]>([]);
+  const [historyPointer, setHistoryPointer] = useState<number>(-1);
+
+  const inputRef = useRef<HTMLInputElement>(null);
+  const outputScrollRef = useRef<HTMLDivElement>(null);
 
   const diagnostics = runResult?.diagnostics || [];
   const errorCount = diagnostics.filter((d) => d.type === 'error').length;
   const warningCount = diagnostics.filter((d) => d.type === 'warning').length;
-  const hasExecutionError = runResult && (!runResult.success || (runResult.exitCode !== 0 && runResult.exitCode !== null));
+  const hasExecutionError =
+    runResult && (!runResult.success || (runResult.exitCode !== 0 && runResult.exitCode !== null));
+
+  // Detect if C code has scanf, getchar, fgets, cin, etc.
+  const stdinReq = useMemo(
+    () => detectStdinRequirements(files && files.length > 0 ? files : [activeFile]),
+    [files, activeFile]
+  );
+
+  // Auto-focus the console input bar when awaiting input or switching to output tab
+  useEffect(() => {
+    if (activeTab === 'output' && (isAwaitingInput || stdinReq.requiresInput)) {
+      const timer = setTimeout(() => {
+        inputRef.current?.focus();
+      }, 80);
+      return () => clearTimeout(timer);
+    }
+  }, [activeTab, isAwaitingInput, stdinReq.requiresInput]);
+
+  // Auto-scroll terminal output to bottom
+  useEffect(() => {
+    if (outputScrollRef.current) {
+      outputScrollRef.current.scrollTop = outputScrollRef.current.scrollHeight;
+    }
+  }, [runResult, isRunning, isAwaitingInput]);
 
   const handleCopyOutput = () => {
     const textToCopy = (runResult?.stdout || '') + (runResult?.stderr ? '\n' + runResult.stderr : '');
@@ -69,6 +109,55 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
       navigator.clipboard.writeText(textToCopy);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  // Handle submitting user input in the console
+  const handleSendInput = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const val = consoleInput.trim();
+
+    // If awaiting input and user presses Enter with empty, run with empty (EOF)
+    if (isAwaitingInput && !val && !stdin.trim()) {
+      if (onRun) onRun('', true);
+      return;
+    }
+
+    if (!val && !stdin.trim()) return;
+
+    if (val) {
+      setInputHistory((prev) => [...prev.filter((h) => h !== val), val]);
+      setHistoryPointer(-1);
+    }
+
+    const newStdin = val || stdin;
+    onStdinChange(newStdin);
+    setConsoleInput('');
+
+    if (onRun) {
+      onRun(newStdin, true);
+    }
+  };
+
+  // Keyboard navigation for command history in input
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (inputHistory.length === 0) return;
+      const nextIdx = historyPointer === -1 ? inputHistory.length - 1 : Math.max(0, historyPointer - 1);
+      setHistoryPointer(nextIdx);
+      setConsoleInput(inputHistory[nextIdx]);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (historyPointer === -1) return;
+      const nextIdx = historyPointer + 1;
+      if (nextIdx >= inputHistory.length) {
+        setHistoryPointer(-1);
+        setConsoleInput('');
+      } else {
+        setHistoryPointer(nextIdx);
+        setConsoleInput(inputHistory[nextIdx]);
+      }
     }
   };
 
@@ -89,13 +178,19 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
           >
             <Terminal className="w-3.5 h-3.5" />
             <span>Console</span>
-            {runResult && (
+            {isAwaitingInput ? (
+              <span className="px-1.5 py-0.2 rounded-full text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold animate-pulse">
+                scanf...
+              </span>
+            ) : runResult ? (
               <span
                 className={`w-1.5 h-1.5 rounded-full ${
                   runResult.success ? 'bg-emerald-400' : 'bg-rose-400 animate-pulse'
                 }`}
               />
-            )}
+            ) : stdinReq.requiresInput ? (
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500/80" title="scanf ativo no código" />
+            ) : null}
           </button>
 
           {/* AI Diagnosis Tab (Highlighted with badge) */}
@@ -105,7 +200,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
             className={`flex items-center space-x-1.5 px-3 py-1 rounded text-xs transition-colors font-sans ${
               activeTab === 'ai'
                 ? 'bg-slate-800 text-amber-300 font-semibold border border-amber-500/30'
-                : (diagnosis?.hasError || hasExecutionError)
+                : diagnosis?.hasError || hasExecutionError
                 ? 'text-amber-300 bg-amber-950/40 hover:bg-amber-900/60 border border-amber-800/60 font-semibold'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
             }`}
@@ -198,147 +293,314 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
                       : 'bg-rose-950 text-rose-300 border border-rose-800'
                   }`}
                 >
-                  Exit: {runResult.exitCode}
-                </span>
-              )}
-
-              {runResult.timedOut && (
-                <span className="flex items-center space-x-1 px-1.5 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-800 text-[10px]">
-                  <ShieldAlert className="w-3 h-3" />
-                  <span>Timeout</span>
+                  exit {runResult.exitCode}
                 </span>
               )}
             </div>
           )}
 
-          <div className="flex items-center space-x-1">
+          {/* Stdin Indicator Pill in Header */}
+          {stdin.trim() && (
+            <div className="hidden sm:flex items-center gap-1 px-2 py-0.5 rounded bg-blue-950/60 border border-blue-800/60 text-blue-300 text-[10px] font-mono">
+              <span>stdin: {stdin.length > 12 ? stdin.substring(0, 12) + '...' : stdin}</span>
+            </div>
+          )}
+
+          {/* Copy Button */}
+          {runResult && (runResult.stdout || runResult.stderr) && (
             <button
               onClick={handleCopyOutput}
-              disabled={!runResult}
-              className="p-1 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded disabled:opacity-30 transition-colors"
               title="Copiar saída do terminal"
+              className="p-1 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded transition-colors"
             >
               {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
             </button>
-            <button
-              onClick={onClearOutput}
-              className="p-1 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded transition-colors"
-              title="Limpar terminal"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
-          </div>
+          )}
+
+          {/* Clear Console Output */}
+          <button
+            onClick={() => {
+              onClearOutput();
+              if (onCancelAwaitingInput) onCancelAwaitingInput();
+            }}
+            title="Limpar console"
+            className="p-1 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded transition-colors"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
         </div>
       </div>
 
       {/* Tab Content Body */}
-      <div className="flex-1 overflow-y-auto font-mono text-[12px] leading-relaxed">
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
         {/* Output / Console Tab View */}
         {activeTab === 'output' && (
-          <div className="p-3 space-y-3">
-            {/* Running Spinner */}
-            {isRunning && (
-              <div className="flex items-center space-x-2 text-amber-400 py-2 font-sans">
-                <div className="w-3 h-3 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
-                <span>Compilando com GCC e executando binário ELF...</span>
-              </div>
-            )}
-
-            {/* Error Notification Alert Banner (OnlineGDB style with instant AI diagnosis trigger) */}
-            {hasExecutionError && (
-              <div className="bg-rose-950/40 border border-rose-800/80 rounded-lg p-2.5 flex items-center justify-between gap-2 font-sans">
-                <div className="flex items-center space-x-2">
-                  <AlertTriangle className="w-4 h-4 text-rose-400 flex-shrink-0" />
-                  <span className="text-xs text-rose-200 font-medium">
-                    {runResult?.phase === 'compilation'
-                      ? 'Erro de compilação detectado no código C!'
-                      : 'O programa finalizou com erro de execução!'}
-                  </span>
+          <div className="flex-1 flex flex-col min-h-0">
+            {/* Scrollable Terminal Output Screen */}
+            <div
+              ref={outputScrollRef}
+              onClick={() => inputRef.current?.focus()}
+              className="flex-1 p-3 space-y-3 overflow-y-auto font-mono text-[12px] leading-relaxed cursor-text"
+            >
+              {/* Running Spinner */}
+              {isRunning && (
+                <div className="flex items-center space-x-2 text-amber-400 py-2 font-sans">
+                  <div className="w-3 h-3 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+                  <span>Compilando com GCC e executando binário ELF...</span>
                 </div>
-                <button
-                  onClick={() => onTabChange('ai')}
-                  className="flex items-center space-x-1.5 px-2.5 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold shadow-sm transition-colors flex-shrink-0"
-                >
-                  <Sparkles className="w-3 h-3" />
-                  <span>Ver Diagnóstico & Correção da IA</span>
-                  <ArrowRight className="w-3 h-3 ml-0.5" />
-                </button>
-              </div>
-            )}
+              )}
 
-            {!isRunning && !runResult && (
-              <div className="text-slate-500 py-8 font-sans text-center space-y-2">
-                <p className="font-semibold text-slate-300">Terminal OnlineGDB pronto para execução.</p>
-                <p className="text-xs text-slate-500 max-w-sm mx-auto">
-                  Pressione <kbd className="px-1.5 py-0.5 bg-slate-800 text-slate-200 rounded border border-slate-700 font-mono">F9</kbd> ou <kbd className="px-1.5 py-0.5 bg-slate-800 text-slate-200 rounded border border-slate-700 font-mono">Ctrl+Enter</kbd> para compilar e rodar.
-                </p>
-              </div>
-            )}
-
-            {runResult && (
-              <div className="space-y-2">
-                {/* OnlineGDB compilation command simulated strip */}
-                <div className="text-slate-500 text-[11px] pb-1 border-b border-slate-800/80 flex items-center justify-between">
-                  <span>$ gcc -std=c11 -O0 -Wall -Wextra {activeFile.name} -lm && ./a.out</span>
-                  <span className="text-slate-600">{runResult.compiler.toUpperCase()} 64-bit</span>
+              {/* Error Notification Alert Banner */}
+              {hasExecutionError && (
+                <div className="bg-rose-950/40 border border-rose-800/80 rounded-lg p-2.5 flex items-center justify-between gap-2 font-sans">
+                  <div className="flex items-center space-x-2">
+                    <AlertTriangle className="w-4 h-4 text-rose-400 flex-shrink-0" />
+                    <span className="text-xs text-rose-200 font-medium">
+                      {runResult?.phase === 'compilation'
+                        ? 'Erro de compilação detectado no código C!'
+                        : 'O programa finalizou com erro de execução!'}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => onTabChange('ai')}
+                    className="flex items-center space-x-1.5 px-2.5 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold shadow-sm transition-colors flex-shrink-0"
+                  >
+                    <Sparkles className="w-3 h-3" />
+                    <span>Ver Diagnóstico & Correção da IA</span>
+                    <ArrowRight className="w-3 h-3 ml-0.5" />
+                  </button>
                 </div>
+              )}
 
-                {/* Compiler Diagnostics Output if Warnings/Errors */}
-                {runResult.compileOutput && (
-                  <div className="p-2.5 rounded bg-slate-900/90 border border-slate-800">
-                    <div className="text-[11px] font-sans font-semibold text-slate-400 mb-1 flex items-center justify-between">
-                      <span className="flex items-center space-x-1">
-                        <AlertCircle className="w-3 h-3 text-amber-400" />
-                        <span>Mensagens do Compilador GCC:</span>
+              {/* Awaiting Input Prompt Box (when user executes code with scanf but no input was provided) */}
+              {isAwaitingInput && (
+                <div className="bg-slate-900/95 border border-emerald-500/50 rounded-lg p-3.5 shadow-lg shadow-black/50 space-y-3 font-sans my-2 animate-in fade-in duration-200">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+                      <span className="text-xs font-semibold text-emerald-300">
+                        Programa aguardando entrada de dados (scanf)
                       </span>
                     </div>
-                    <pre className="text-slate-300 text-[11px] whitespace-pre-wrap leading-relaxed">
-                      {runResult.compileOutput}
-                    </pre>
+                    {stdinReq.expectedTypeHint && (
+                      <span className="text-[11px] bg-slate-800 text-emerald-300 font-mono px-2 py-0.5 rounded border border-slate-700">
+                        Esperado: {stdinReq.expectedTypeHint}
+                      </span>
+                    )}
                   </div>
-                )}
 
-                {/* Program stdout */}
-                {runResult.stdout && (
-                  <div className="text-emerald-300 whitespace-pre-wrap font-mono text-[12px] bg-slate-950/60 p-2.5 rounded border border-slate-800/40">
-                    {runResult.stdout}
+                  {stdinReq.detectedPrompts && stdinReq.detectedPrompts.length > 0 && (
+                    <div className="text-xs text-slate-200 bg-slate-950/80 p-2.5 rounded border border-slate-800 font-mono flex items-center gap-2">
+                      <span className="text-emerald-400 font-bold">$</span>
+                      <span>{stdinReq.detectedPrompts[0]}</span>
+                    </div>
+                  )}
+
+                  <p className="text-xs text-slate-300">
+                    Digite o valor desejado no campo do console logo abaixo e pressione{' '}
+                    <kbd className="px-1.5 py-0.5 bg-slate-800 text-emerald-300 rounded border border-slate-700 font-mono text-[10px]">
+                      Enter ↵
+                    </kbd>{' '}
+                    para enviar.
+                  </p>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => inputRef.current?.focus()}
+                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded transition-colors flex items-center gap-1.5 shadow-sm"
+                    >
+                      <Keyboard className="w-3.5 h-3.5" />
+                      <span>Digitar no Console</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (onRun) onRun('', true);
+                      }}
+                      className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded transition-colors border border-slate-700"
+                    >
+                      Executar sem entrada (EOF)
+                    </button>
                   </div>
-                )}
-
-                {/* Program stderr */}
-                {runResult.stderr && (
-                  <div className="text-rose-400 whitespace-pre-wrap font-mono text-[12px] bg-rose-950/20 p-2.5 rounded border border-rose-900/50">
-                    {runResult.stderr}
-                  </div>
-                )}
-
-                {/* Process termination line (Classic OnlineGDB style) */}
-                <div className="text-slate-500 text-[11px] pt-2 border-t border-slate-800/60 font-sans">
-                  --------------------------------
-                  <br />
-                  Process returned {runResult.exitCode ?? 0} (0x{((runResult.exitCode ?? 0) >>> 0).toString(16).toUpperCase()}) &nbsp;
-                  execution time : {formatDuration(runResult.executionTimeMs)}
                 </div>
+              )}
+
+              {/* Ready / Idle state */}
+              {!isRunning && !runResult && !isAwaitingInput && (
+                <div className="text-slate-500 py-8 font-sans text-center space-y-2">
+                  <p className="font-semibold text-slate-300">Terminal interativo pronto para execução.</p>
+                  <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                    Pressione <kbd className="px-1.5 py-0.5 bg-slate-800 text-slate-200 rounded border border-slate-700 font-mono">F9</kbd> ou clique em <strong className="text-emerald-400">Executar</strong>. Se houver <code className="text-blue-400 font-mono">scanf()</code>, você poderá digitar os valores diretamente aqui no console!
+                  </p>
+                </div>
+              )}
+
+              {/* Run Results Output */}
+              {runResult && (
+                <div className="space-y-2.5">
+                  {/* Compilation command simulated strip */}
+                  <div className="text-slate-500 text-[11px] pb-1 border-b border-slate-800/80 flex items-center justify-between">
+                    <span>$ gcc -std=c11 -O0 -Wall -Wextra {activeFile.name} -lm && ./a.out</span>
+                    <span className="text-slate-600">{runResult.compiler.toUpperCase()} 64-bit</span>
+                  </div>
+
+                  {/* Compiler Diagnostics Output if Warnings/Errors */}
+                  {runResult.compileOutput && (
+                    <div className="p-2.5 rounded bg-slate-900/90 border border-slate-800">
+                      <div className="text-[11px] font-sans font-semibold text-slate-400 mb-1 flex items-center justify-between">
+                        <span className="flex items-center space-x-1">
+                          <AlertCircle className="w-3 h-3 text-amber-400" />
+                          <span>Mensagens do Compilador GCC:</span>
+                        </span>
+                      </div>
+                      <pre className="text-slate-300 text-[11px] whitespace-pre-wrap leading-relaxed">
+                        {runResult.compileOutput}
+                      </pre>
+                    </div>
+                  )}
+
+                  {/* Program stdout with interleaved user input */}
+                  {runResult.stdout ? (
+                    <div className="bg-slate-950/70 p-3 rounded border border-slate-800/60 space-y-1">
+                      {interleaveStdoutAndStdin(runResult.stdout, stdin).map((seg, idx) =>
+                        seg.type === 'stdin' ? (
+                          <div key={idx} className="my-1.5 flex items-center gap-2">
+                            <span className="text-emerald-400 font-bold select-none font-mono">&gt;</span>
+                            <span className="px-2 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-300 font-mono text-[12px] font-bold">
+                              {seg.text}
+                            </span>
+                            <span className="text-[10px] text-slate-500 font-sans italic">
+                              (entrada scanf)
+                            </span>
+                          </div>
+                        ) : (
+                          <div key={idx} className="text-emerald-300 whitespace-pre-wrap font-mono text-[12px] leading-relaxed">
+                            {seg.text}
+                          </div>
+                        )
+                      )}
+                    </div>
+                  ) : null}
+
+                  {/* Program stderr */}
+                  {runResult.stderr && (
+                    <div className="text-rose-400 whitespace-pre-wrap font-mono text-[12px] bg-rose-950/20 p-2.5 rounded border border-rose-900/50">
+                      {runResult.stderr}
+                    </div>
+                  )}
+
+                  {/* Hint if program has scanf and no input was provided */}
+                  {stdinReq.requiresInput && !stdin.trim() && (
+                    <div className="bg-slate-900/60 border border-slate-800 rounded p-2 text-xs font-sans text-slate-400 flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <Keyboard className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+                        <span>Deseja testar com outros dados para o <code className="text-emerald-300 font-mono">scanf()</code>?</span>
+                      </div>
+                      <span className="text-slate-500 text-[11px]">Digite no campo abaixo e tecle Enter</span>
+                    </div>
+                  )}
+
+                  {/* Process termination line (Classic OnlineGDB style) */}
+                  <div className="text-slate-500 text-[11px] pt-2 border-t border-slate-800/60 font-sans flex items-center justify-between">
+                    <div>
+                      --------------------------------
+                      <br />
+                      Process returned {runResult.exitCode ?? 0} (0x{((runResult.exitCode ?? 0) >>> 0).toString(16).toUpperCase()}) &nbsp;
+                      execution time : {formatDuration(runResult.executionTimeMs)}
+                    </div>
+                    {stdin.trim() && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onStdinChange('');
+                          if (onRun) onRun('', true);
+                        }}
+                        className="text-[11px] text-slate-400 hover:text-slate-200 flex items-center gap-1 font-sans transition-colors"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>Limpar Entrada</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Interactive Console Input Bar (Always accessible in Console tab) */}
+            <form
+              onSubmit={handleSendInput}
+              className="flex items-center gap-2 px-3 py-2 bg-[#121822] border-t border-slate-800 select-none flex-shrink-0"
+            >
+              {/* Terminal prompt symbol */}
+              <div className="flex items-center text-emerald-400 font-mono font-bold text-xs pl-1">
+                <span>$</span>
+                <span className="text-slate-600 mx-1.5">|</span>
               </div>
-            )}
+
+              {/* Input text field */}
+              <input
+                ref={inputRef}
+                type="text"
+                value={consoleInput}
+                onChange={(e) => setConsoleInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={
+                  isAwaitingInput
+                    ? `Digite a entrada para o scanf e tecle Enter (ex: ${stdinReq.expectedTypeHint || '42'})...`
+                    : stdinReq.requiresInput
+                    ? 'Digite aqui o valor para o scanf e tecle Enter...'
+                    : 'Inserir entrada (stdin) para o programa C e tecle Enter...'
+                }
+                className="flex-1 bg-slate-950 border border-slate-700/80 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/30 rounded px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 font-mono focus:outline-none transition-colors"
+              />
+
+              {/* Clear button if stdin has value */}
+              {stdin.trim() && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onStdinChange('');
+                    setConsoleInput('');
+                  }}
+                  title="Limpar entrada armazenada"
+                  className="px-2 py-1 text-[11px] text-slate-400 hover:text-rose-300 hover:bg-slate-800 rounded transition-colors flex items-center gap-1 font-sans"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  <span className="hidden sm:inline">Limpar</span>
+                </button>
+              )}
+
+              {/* Submit button */}
+              <button
+                type="submit"
+                disabled={isRunning || (!consoleInput.trim() && !stdin.trim() && !isAwaitingInput)}
+                className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded text-xs font-sans font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
+              >
+                <span>Enviar</span>
+                <CornerDownLeft className="w-3.5 h-3.5" />
+              </button>
+            </form>
           </div>
         )}
 
         {/* AI Diagnosis Tab View */}
         {activeTab === 'ai' && (
-          <AIDiagnosisPanel
-            diagnosis={diagnosis}
-            isLoading={isLoadingDiagnosis}
-            activeFile={activeFile}
-            onApplyFix={onApplyFix}
-            onJumpToLine={(file, line) => onSelectDiagnosticLine(file || activeFile.name, line || 1)}
-            onRequestReanalysis={onRequestReanalysis}
-          />
+          <div className="flex-1 overflow-y-auto">
+            <AIDiagnosisPanel
+              diagnosis={diagnosis}
+              isLoading={isLoadingDiagnosis}
+              activeFile={activeFile}
+              onApplyFix={onApplyFix}
+              onJumpToLine={(file, line) => onSelectDiagnosticLine(file || activeFile.name, line || 1)}
+              onRequestReanalysis={onRequestReanalysis}
+            />
+          </div>
         )}
 
         {/* Stdin Tab View */}
         {activeTab === 'stdin' && (
-          <div className="p-3 h-full flex flex-col space-y-2">
+          <div className="p-3 h-full flex flex-col space-y-2 overflow-y-auto">
             <div className="text-xs text-slate-400 font-sans flex items-center justify-between">
               <span>
                 Entrada Padrão (Passada para <code className="text-blue-400 font-mono">scanf()</code>, <code className="text-blue-400 font-mono">fgets()</code>, <code className="text-blue-400 font-mono">getchar()</code>):
@@ -357,14 +619,14 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
               className="w-full flex-1 min-h-[140px] bg-slate-950 border border-slate-800 rounded p-2.5 font-mono text-xs text-slate-200 focus:border-blue-500 outline-none resize-none"
             />
             <p className="text-[11px] text-slate-500 font-sans">
-              Dica: Quando o código executar <code className="text-slate-400 font-mono">scanf("%d", &x)</code>, os valores inseridos acima serão lidos na ordem informada.
+              Dica: Você também pode digitar diretamente na aba <strong className="text-emerald-400">Console</strong> no rodapé da tela quando o programa pedir entrada via scanf!
             </p>
           </div>
         )}
 
         {/* Diagnostics Tab View */}
         {activeTab === 'diagnostics' && (
-          <div className="p-3 space-y-2">
+          <div className="p-3 space-y-2 overflow-y-auto flex-1">
             {diagnostics.length === 0 ? (
               <div className="text-slate-500 py-8 text-center font-sans">
                 <p className="text-emerald-400 font-medium">Nenhum aviso ou erro no momento.</p>
@@ -411,7 +673,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
 
         {/* Assembly Tab View */}
         {activeTab === 'assembly' && (
-          <div className="p-3">
+          <div className="p-3 overflow-y-auto flex-1">
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs text-slate-400 font-sans">
                 Código Assembly gerado via <code className="text-purple-400 font-mono">gcc -S -fverbose-asm -O2</code>:

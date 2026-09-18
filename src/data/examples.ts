@@ -42,7 +42,7 @@ int main(void) {
 
     printf("Digite dois números inteiros (separados por espaço):\\n");
     
-    // Leitura a partir da aba 'Entrada (stdin)'
+    // Leitura interativa com scanf (digite no console ou aba Entrada)
     if (scanf("%d %d", &num1, &num2) == 2) {
         printf("Primeiro número: %d\\n", num1);
         printf("Segundo número : %d\\n", num2);

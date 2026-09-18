@@ -214,10 +214,7 @@ export default function App() {
         setStdin(overrideStdin);
       }
 
-      // Check if C code has scanf/getchar/fgets and no stdin has been provided yet
-      const stdinReq = detectStdinRequirements(files);
-      const needsInput = Boolean(stdinReq.requiresInput && !actualStdin.trim() && !skipInputPrompt);
-      setIsAwaitingInput(needsInput);
+      setIsAwaitingInput(false);
       setIsRunning(true);
       setHighlightedLine(null);
       setTerminalTab('output');

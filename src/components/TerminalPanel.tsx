@@ -70,6 +70,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
   const [consoleInput, setConsoleInput] = useState('');
   const [inputHistory, setInputHistory] = useState<string[]>([]);
   const [historyPointer, setHistoryPointer] = useState<number>(-1);
+  const [showStdinBox, setShowStdinBox] = useState<boolean>(false);
 
   const safeStdin = typeof stdin === 'string' ? stdin : '';
 
@@ -182,18 +183,12 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
           >
             <Terminal className="w-3.5 h-3.5" />
             <span>Console</span>
-            {isAwaitingInput ? (
-              <span className="px-1.5 py-0.2 rounded-full text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold animate-pulse">
-                scanf...
-              </span>
-            ) : runResult ? (
+            {runResult ? (
               <span
                 className={`w-1.5 h-1.5 rounded-full ${
-                  runResult.success ? 'bg-emerald-400' : 'bg-rose-400 animate-pulse'
+                  runResult.success ? 'bg-emerald-400' : 'bg-rose-400'
                 }`}
               />
-            ) : stdinReq.requiresInput ? (
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500/80" title="scanf ativo no código" />
             ) : null}
           </button>
 
@@ -303,12 +298,22 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
             </div>
           )}
 
-          {/* Stdin Indicator Pill in Header */}
-          {Boolean(safeStdin.trim()) && (
-            <div className="hidden sm:flex items-center gap-1 px-2 py-0.5 rounded bg-blue-950/60 border border-blue-800/60 text-blue-300 text-[10px] font-mono">
-              <span>stdin: {safeStdin.length > 12 ? safeStdin.substring(0, 12) + '...' : safeStdin}</span>
-            </div>
-          )}
+          {/* OnlineGDB-style Standard Input Toggle */}
+          <button
+            type="button"
+            onClick={() => setShowStdinBox(!showStdinBox)}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-sans transition-colors border ${
+              showStdinBox || Boolean(safeStdin.trim())
+                ? 'bg-blue-950/70 border-blue-700 text-blue-300 font-medium'
+                : 'bg-slate-800/80 border-slate-700 text-slate-300 hover:text-white hover:bg-slate-700'
+            }`}
+            title="Alternar caixa de Entrada Padrão (stdin) como no OnlineGDB"
+          >
+            <Keyboard className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Entrada (stdin)</span>
+            <span className="sm:hidden">stdin</span>
+            {Boolean(safeStdin.trim()) && <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />}
+          </button>
 
           {/* Copy Button */}
           {runResult && (runResult.stdout || runResult.stderr) && (
@@ -340,6 +345,46 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
         {/* Output / Console Tab View */}
         {activeTab === 'output' && (
           <div className="flex-1 flex flex-col min-h-0">
+            {/* OnlineGDB-style Standard Input Collapsible Drawer */}
+            {showStdinBox && (
+              <div className="bg-[#161b22] border-b border-slate-800 p-2.5 space-y-1.5 flex-shrink-0 animate-in slide-in-from-top-1 duration-150">
+                <div className="flex items-center justify-between text-xs text-slate-300 font-sans">
+                  <span className="flex items-center gap-1.5 font-semibold text-blue-400">
+                    <Keyboard className="w-3.5 h-3.5" />
+                    <span>Entrada Padrão (Standard Input / stdin)</span>
+                  </span>
+                  <div className="flex items-center gap-2">
+                    {Boolean(safeStdin.trim()) && (
+                      <button
+                        type="button"
+                        onClick={() => onStdinChange('')}
+                        className="text-[11px] text-slate-400 hover:text-rose-300 transition-colors"
+                      >
+                        Limpar
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setShowStdinBox(false)}
+                      className="text-[11px] text-slate-400 hover:text-slate-200 transition-colors"
+                    >
+                      ✕ Fechar
+                    </button>
+                  </div>
+                </div>
+                <textarea
+                  value={safeStdin}
+                  onChange={(e) => onStdinChange(e.target.value)}
+                  placeholder="Digite aqui as entradas do programa para o scanf (números ou textos separados por espaço ou linhas, estilo OnlineGDB)..."
+                  rows={3}
+                  className="w-full bg-[#0d1117] border border-slate-700/80 rounded p-2 text-xs font-mono text-slate-100 placeholder-slate-500 focus:border-blue-500 outline-none resize-y"
+                />
+                <p className="text-[10px] text-slate-400 font-sans">
+                  Dica: Valores preenchidos aqui serão enviados automaticamente para o <code className="text-blue-300 font-mono">scanf()</code> quando você clicar em Executar (F9).
+                </p>
+              </div>
+            )}
+
             {/* Scrollable Terminal Output Screen */}
             <div
               ref={outputScrollRef}
@@ -376,66 +421,14 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
                 </div>
               )}
 
-              {/* Awaiting Input Prompt Box (when user executes code with scanf but no input was provided) */}
-              {isAwaitingInput && (
-                <div className="bg-slate-900/95 border border-emerald-500/50 rounded-lg p-3.5 shadow-lg shadow-black/50 space-y-3 font-sans my-2 animate-in fade-in duration-200">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-2">
-                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
-                      <span className="text-xs font-semibold text-emerald-300">
-                        Programa aguardando entrada de dados (scanf)
-                      </span>
-                    </div>
-                    {stdinReq.expectedTypeHint && (
-                      <span className="text-[11px] bg-slate-800 text-emerald-300 font-mono px-2 py-0.5 rounded border border-slate-700">
-                        Esperado: {stdinReq.expectedTypeHint}
-                      </span>
-                    )}
-                  </div>
-
-                  {stdinReq.detectedPrompts && stdinReq.detectedPrompts.length > 0 && (
-                    <div className="text-xs text-slate-200 bg-slate-950/80 p-2.5 rounded border border-slate-800 font-mono flex items-center gap-2">
-                      <span className="text-emerald-400 font-bold">$</span>
-                      <span>{stdinReq.detectedPrompts[0]}</span>
-                    </div>
-                  )}
-
-                  <p className="text-xs text-slate-300">
-                    Digite o valor desejado no campo do console logo abaixo e pressione{' '}
-                    <kbd className="px-1.5 py-0.5 bg-slate-800 text-emerald-300 rounded border border-slate-700 font-mono text-[10px]">
-                      Enter ↵
-                    </kbd>{' '}
-                    para enviar.
-                  </p>
-
-                  <div className="flex flex-wrap items-center gap-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => inputRef.current?.focus()}
-                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded transition-colors flex items-center gap-1.5 shadow-sm"
-                    >
-                      <Keyboard className="w-3.5 h-3.5" />
-                      <span>Digitar no Console</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (onRun) onRun('', true);
-                      }}
-                      className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded transition-colors border border-slate-700"
-                    >
-                      Executar sem entrada (EOF)
-                    </button>
-                  </div>
-                </div>
-              )}
-
               {/* Ready / Idle state */}
-              {!isRunning && !runResult && !isAwaitingInput && (
-                <div className="text-slate-500 py-8 font-sans text-center space-y-2">
-                  <p className="font-semibold text-slate-300">Terminal interativo pronto para execução.</p>
-                  <p className="text-xs text-slate-500 max-w-sm mx-auto">
-                    Pressione <kbd className="px-1.5 py-0.5 bg-slate-800 text-slate-200 rounded border border-slate-700 font-mono">F9</kbd> ou clique em <strong className="text-emerald-400">Executar</strong>. Se houver <code className="text-blue-400 font-mono">scanf()</code>, você poderá digitar os valores diretamente aqui no console!
+              {!isRunning && !runResult && (
+                <div className="text-slate-500 py-8 font-sans text-center space-y-2 select-none">
+                  <p className="font-semibold text-slate-300">Console GCC OnlineGDB pronto para execução.</p>
+                  <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
+                    Pressione <kbd className="px-1.5 py-0.5 bg-slate-800 text-emerald-300 rounded border border-slate-700 font-mono font-bold">F9</kbd> ou clique no botão <strong className="text-emerald-400">Executar</strong>.
+                    <br />
+                    Para programas com <code className="text-blue-400 font-mono">scanf()</code>, você pode digitar os dados na aba <strong className="text-blue-300">Entrada (stdin)</strong> ou digitar no prompt do console abaixo.
                   </p>
                 </div>
               )}
@@ -444,44 +437,30 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
               {runResult && (
                 <div className="space-y-2.5">
                   {/* Compilation command simulated strip */}
-                  <div className="text-slate-500 text-[11px] pb-1 border-b border-slate-800/80 flex items-center justify-between">
+                  <div className="text-slate-500 text-[11px] pb-1 border-b border-slate-800/80 flex items-center justify-between font-mono select-none">
                     <span>$ gcc -std=c11 -O0 -Wall -Wextra {activeFile?.name || 'main.c'} -lm && ./a.out</span>
                     <span className="text-slate-600">{(runResult?.compiler || 'gcc').toUpperCase()} 64-bit</span>
                   </div>
 
                   {/* Compiler Diagnostics Output if Warnings/Errors */}
                   {runResult.compileOutput && (
-                    <div className="p-2.5 rounded bg-slate-900/90 border border-slate-800">
-                      <div className="text-[11px] font-sans font-semibold text-slate-400 mb-1 flex items-center justify-between">
-                        <span className="flex items-center space-x-1">
-                          <AlertCircle className="w-3 h-3 text-amber-400" />
-                          <span>Mensagens do Compilador GCC:</span>
-                        </span>
-                      </div>
-                      <pre className="text-slate-300 text-[11px] whitespace-pre-wrap leading-relaxed">
-                        {runResult.compileOutput}
-                      </pre>
+                    <div className="p-3 rounded bg-slate-950 border border-slate-800 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-slate-300">
+                      {runResult.compileOutput}
                     </div>
                   )}
 
                   {/* Program stdout with interleaved user input */}
                   {runResult.stdout ? (
-                    <div className="bg-slate-950/70 p-3 rounded border border-slate-800/60 space-y-1">
+                    <div className="bg-slate-950 p-3 rounded border border-slate-800/60 font-mono text-[12px] leading-relaxed whitespace-pre-wrap">
                       {interleaveStdoutAndStdin(runResult.stdout || '', safeStdin).map((seg, idx) =>
                         seg.type === 'stdin' ? (
-                          <div key={idx} className="my-1.5 flex items-center gap-2">
-                            <span className="text-emerald-400 font-bold select-none font-mono">&gt;</span>
-                            <span className="px-2 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-300 font-mono text-[12px] font-bold">
-                              {seg.text}
-                            </span>
-                            <span className="text-[10px] text-slate-500 font-sans italic">
-                              (entrada scanf)
-                            </span>
-                          </div>
-                        ) : (
-                          <div key={idx} className="text-emerald-300 whitespace-pre-wrap font-mono text-[12px] leading-relaxed">
+                          <span key={idx} className="text-cyan-300 font-bold underline decoration-cyan-500/40">
                             {seg.text}
-                          </div>
+                          </span>
+                        ) : (
+                          <span key={idx} className="text-slate-100">
+                            {seg.text}
+                          </span>
                         )
                       )}
                     </div>
@@ -494,19 +473,8 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
                     </div>
                   )}
 
-                  {/* Hint if program has scanf and no input was provided */}
-                  {Boolean(stdinReq.requiresInput && !safeStdin.trim()) && (
-                    <div className="bg-slate-900/60 border border-slate-800 rounded p-2 text-xs font-sans text-slate-400 flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <Keyboard className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
-                        <span>Deseja testar com outros dados para o <code className="text-emerald-300 font-mono">scanf()</code>?</span>
-                      </div>
-                      <span className="text-slate-500 text-[11px]">Digite no campo abaixo e tecle Enter</span>
-                    </div>
-                  )}
-
                   {/* Process termination line (Classic OnlineGDB style) */}
-                  <div className="text-slate-500 text-[11px] pt-2 border-t border-slate-800/60 font-sans flex items-center justify-between">
+                  <div className="text-slate-500 text-[11px] pt-2 border-t border-slate-800/60 font-mono flex items-center justify-between">
                     <div>
                       --------------------------------
                       <br />
@@ -549,15 +517,22 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
                 value={consoleInput}
                 onChange={(e) => setConsoleInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={
-                  isAwaitingInput
-                    ? `Digite a entrada para o scanf e tecle Enter (ex: ${stdinReq.expectedTypeHint || '42'})...`
-                    : stdinReq.requiresInput
-                    ? 'Digite aqui o valor para o scanf e tecle Enter...'
-                    : 'Inserir entrada (stdin) para o programa C e tecle Enter...'
-                }
+                placeholder="Inserir entrada (stdin) para o programa e tecle Enter..."
                 className="flex-1 bg-slate-950 border border-slate-700/80 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/30 rounded px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 font-mono focus:outline-none transition-colors"
               />
+
+              {/* Quick toggle for standard input drawer if not open */}
+              {!showStdinBox && (
+                <button
+                  type="button"
+                  onClick={() => setShowStdinBox(true)}
+                  className="hidden sm:flex items-center gap-1 px-2 py-1 text-[11px] text-slate-400 hover:text-blue-300 hover:bg-slate-800 rounded transition-colors font-sans"
+                  title="Abrir caixa de texto de Entrada Padrão (stdin)"
+                >
+                  <Keyboard className="w-3 h-3" />
+                  <span>+ stdin</span>
+                </button>
+              )}
 
               {/* Clear button if stdin has value */}
               {Boolean(safeStdin.trim()) && (
@@ -578,7 +553,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
               {/* Submit button */}
               <button
                 type="submit"
-                disabled={isRunning || (!consoleInput.trim() && !safeStdin.trim() && !isAwaitingInput)}
+                disabled={isRunning || (!consoleInput.trim() && !safeStdin.trim())}
                 className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded text-xs font-sans font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
               >
                 <span>Enviar</span>

@@ -93,35 +93,43 @@ export function interleaveStdoutAndStdin(stdout?: string | null, stdin?: string 
   }
 
   // Look for common interactive prompt endings in stdout, like "Digite sua idade: " or "? "
-  const promptEndRegex = /(:\s*|\?\s*|\n(?=[A-ZÀ-Ú0-9]))/g;
-  let firstPromptIndex = -1;
-  const match = promptEndRegex.exec(safeStdout);
-  if (match) {
-    firstPromptIndex = match.index + match[0].length;
+  const promptEndRegex = /(:[ \t]*|\?[ \t]*|>[ \t]*)/g;
+  const segments: TerminalSegment[] = [];
+  let lastIndex = 0;
+  let stdinIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = promptEndRegex.exec(safeStdout)) !== null && stdinIndex < stdinLines.length) {
+    const promptEnd = match.index + match[0].length;
+    segments.push({
+      type: 'stdout',
+      text: safeStdout.substring(lastIndex, promptEnd),
+    });
+    // Echo the input line as user entered it with a trailing newline
+    segments.push({
+      type: 'stdin',
+      text: stdinLines[stdinIndex] + '\n',
+    });
+    lastIndex = promptEnd;
+    stdinIndex++;
   }
 
-  if (firstPromptIndex > 0 && firstPromptIndex < safeStdout.length) {
-    const beforePrompt = safeStdout.substring(0, firstPromptIndex);
-    const afterPrompt = safeStdout.substring(firstPromptIndex);
-
-    const segments: TerminalSegment[] = [
-      { type: 'stdout', text: beforePrompt },
-    ];
-
-    for (const inp of stdinLines) {
-      segments.push({ type: 'stdin', text: inp });
-    }
-
-    if (afterPrompt.trim()) {
-      segments.push({ type: 'stdout', text: afterPrompt.startsWith('\n') ? afterPrompt : '\n' + afterPrompt });
-    }
-
-    return segments;
+  // Any remaining stdout
+  if (lastIndex < safeStdout.length) {
+    segments.push({
+      type: 'stdout',
+      text: safeStdout.substring(lastIndex),
+    });
   }
 
-  // Default fallback: prompt lines followed by user input then remaining output
-  return [
-    { type: 'stdout', text: safeStdout },
-    ...stdinLines.map((inp) => ({ type: 'stdin' as const, text: inp })),
-  ];
+  // Any remaining stdin lines that didn't have matching prompts
+  while (stdinIndex < stdinLines.length) {
+    segments.push({
+      type: 'stdin',
+      text: stdinLines[stdinIndex] + '\n',
+    });
+    stdinIndex++;
+  }
+
+  return segments.length > 0 ? segments : [{ type: 'stdout', text: safeStdout }];
 }

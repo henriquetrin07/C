@@ -178,7 +178,9 @@ export function runSemanticCHeuristicAnalysis(
     const errLine = parseInt(semiMatch[2], 10);
     let actualLine = errLine;
     for (let l = errLine - 2; l >= 0; l--) {
-      if (lines[l].trim().length > 0 && !lines[l].trim().startsWith('//') && !lines[l].trim().startsWith('/*')) {
+      const lineStr = lines[l] || '';
+      const trimmed = lineStr.trim();
+      if (trimmed.length > 0 && !trimmed.startsWith('//') && !trimmed.startsWith('/*')) {
         actualLine = l + 1;
         break;
       }

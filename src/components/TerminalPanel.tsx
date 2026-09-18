@@ -71,6 +71,8 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
   const [inputHistory, setInputHistory] = useState<string[]>([]);
   const [historyPointer, setHistoryPointer] = useState<number>(-1);
 
+  const safeStdin = typeof stdin === 'string' ? stdin : '';
+
   const inputRef = useRef<HTMLInputElement>(null);
   const outputScrollRef = useRef<HTMLDivElement>(null);
 
@@ -228,7 +230,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
           >
             <Keyboard className="w-3.5 h-3.5" />
             <span>Entrada (stdin)</span>
-            {Boolean(typeof stdin === 'string' && stdin.trim()) && <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />}
+            {Boolean(safeStdin.trim()) && <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />}
           </button>
 
           {/* Diagnostics Tab */}
@@ -302,9 +304,9 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
           )}
 
           {/* Stdin Indicator Pill in Header */}
-          {Boolean(typeof stdin === 'string' && stdin.trim()) && (
+          {Boolean(safeStdin.trim()) && (
             <div className="hidden sm:flex items-center gap-1 px-2 py-0.5 rounded bg-blue-950/60 border border-blue-800/60 text-blue-300 text-[10px] font-mono">
-              <span>stdin: {stdin.length > 12 ? stdin.substring(0, 12) + '...' : stdin}</span>
+              <span>stdin: {safeStdin.length > 12 ? safeStdin.substring(0, 12) + '...' : safeStdin}</span>
             </div>
           )}
 
@@ -465,7 +467,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
                   {/* Program stdout with interleaved user input */}
                   {runResult.stdout ? (
                     <div className="bg-slate-950/70 p-3 rounded border border-slate-800/60 space-y-1">
-                      {interleaveStdoutAndStdin(runResult.stdout || '', stdin || '').map((seg, idx) =>
+                      {interleaveStdoutAndStdin(runResult.stdout || '', safeStdin).map((seg, idx) =>
                         seg.type === 'stdin' ? (
                           <div key={idx} className="my-1.5 flex items-center gap-2">
                             <span className="text-emerald-400 font-bold select-none font-mono">&gt;</span>
@@ -493,7 +495,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
                   )}
 
                   {/* Hint if program has scanf and no input was provided */}
-                  {Boolean(stdinReq.requiresInput && !(typeof stdin === 'string' && stdin.trim())) && (
+                  {Boolean(stdinReq.requiresInput && !safeStdin.trim()) && (
                     <div className="bg-slate-900/60 border border-slate-800 rounded p-2 text-xs font-sans text-slate-400 flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
                         <Keyboard className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
@@ -511,7 +513,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
                       Process returned {runResult.exitCode ?? 0} (0x{((runResult.exitCode ?? 0) >>> 0).toString(16).toUpperCase()}) &nbsp;
                       execution time : {formatDuration(runResult.executionTimeMs)}
                     </div>
-                    {Boolean(typeof stdin === 'string' && stdin.trim()) && (
+                    {Boolean(safeStdin.trim()) && (
                       <button
                         type="button"
                         onClick={() => {
@@ -558,7 +560,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
               />
 
               {/* Clear button if stdin has value */}
-              {stdin.trim() && (
+              {Boolean(safeStdin.trim()) && (
                 <button
                   type="button"
                   onClick={() => {
@@ -576,7 +578,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
               {/* Submit button */}
               <button
                 type="submit"
-                disabled={isRunning || (!consoleInput.trim() && !stdin.trim() && !isAwaitingInput)}
+                disabled={isRunning || (!consoleInput.trim() && !safeStdin.trim() && !isAwaitingInput)}
                 className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded text-xs font-sans font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
               >
                 <span>Enviar</span>
@@ -615,7 +617,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
               </button>
             </div>
             <textarea
-              value={stdin}
+              value={safeStdin}
               onChange={(e) => onStdinChange(e.target.value)}
               placeholder="Digite aqui as entradas do seu programa, separadas por espaços ou linhas (ex: 42 100)..."
               className="w-full flex-1 min-h-[140px] bg-slate-950 border border-slate-800 rounded p-2.5 font-mono text-xs text-slate-200 focus:border-blue-500 outline-none resize-none"

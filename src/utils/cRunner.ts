@@ -89,7 +89,7 @@ async function executeViaCloudGCC(
   // Build flags
   const userArgs = [`-std=${options.standard}`, options.optimization, '-Wall', '-Wextra'];
   if (options.enablePedantic) userArgs.push('-pedantic');
-  if (options.customFlags && options.customFlags.trim()) {
+  if (typeof options.customFlags === 'string' && options.customFlags.trim()) {
     const custom = options.customFlags.trim().split(/\s+/);
     userArgs.push(...custom);
   }
@@ -204,7 +204,7 @@ export async function executeCCode(
     try {
       const flags: string[] = [];
       if (options.enablePedantic) flags.push('-pedantic');
-      if (options.customFlags.trim()) {
+      if (typeof options.customFlags === 'string' && options.customFlags.trim()) {
         const parts = options.customFlags.trim().split(/\s+/);
         flags.push(...parts);
       }

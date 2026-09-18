@@ -117,7 +117,7 @@ export const DatabaseClient = {
     username: string,
     password: string
   ): Promise<{ success: boolean; user: User; token: string; error?: string }> {
-    const cleanUsername = username.trim();
+    const cleanUsername = (typeof username === 'string' ? username : '').trim();
     if (cleanUsername.length < 3) {
       return {
         success: false,
@@ -257,7 +257,7 @@ int main() {
     username: string,
     password: string
   ): Promise<{ success: boolean; user: User; token: string; error?: string }> {
-    const cleanUsername = username.trim();
+    const cleanUsername = (typeof username === 'string' ? username : '').trim();
     if (!cleanUsername || !password) {
       return {
         success: false,
@@ -497,7 +497,7 @@ int main() {
     const projectId =
       data.id || 'p_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
     const now = new Date().toISOString();
-    const title = data.title.trim() || 'Projeto sem título';
+    const title = (typeof data?.title === 'string' ? data.title.trim() : '') || 'Projeto sem título';
 
     const project: UserProject = {
       id: projectId,

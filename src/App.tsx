@@ -642,7 +642,7 @@ export default function App() {
             <TerminalPanel
               runResult={runResult}
               isRunning={isRunning}
-              stdin={stdin}
+              stdin={typeof stdin === 'string' ? stdin : ''}
               onStdinChange={setStdin}
               onClearOutput={() => {
                 setRunResult(null);

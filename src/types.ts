@@ -27,6 +27,9 @@ export interface RunResult {
   executionTimeMs?: number;
   error?: string;
   diagnostics: CompilerDiagnostic[];
+  sessionId?: string;
+  isAlive?: boolean;
+  rawStream?: Array<{ type: 'stdout' | 'stdin' | 'stderr' | 'system'; text: string }>;
 }
 
 export interface CompilerOptions {

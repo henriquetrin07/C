@@ -26,6 +26,9 @@ import {
   checkBackendAvailability,
   executeCCode,
   generateAssembly,
+  startInteractiveSession,
+  sendInteractiveInput,
+  killInteractiveSession,
   EngineMode,
 } from './utils/cRunner';
 import { DatabaseClient } from './utils/database';
@@ -204,10 +207,10 @@ export default function App() {
     );
   };
 
-  // Run C compilation and execution with interactive stdin support
+  // Run C compilation and execution with interactive live stdin support
   const handleRun = useCallback(
     async (overrideStdin?: string, skipInputPrompt?: boolean) => {
-      if (isRunning) return;
+      if (isRunning && runResult?.isAlive) return;
 
       const actualStdin = typeof overrideStdin === 'string' ? overrideStdin : (typeof stdin === 'string' ? stdin : '');
       if (overrideStdin !== undefined && overrideStdin !== stdin) {
@@ -220,18 +223,28 @@ export default function App() {
       setTerminalTab('output');
 
       try {
-        const { result, usedEngine } = await executeCCode(
-          files,
-          actualStdin,
-          compilerOptions,
-          engineMode
-        );
+        let result: RunResult;
+        let usedEngine: EngineMode = engineMode;
+
+        if (engineMode === 'native') {
+          result = await startInteractiveSession(files, actualStdin, compilerOptions);
+        } else {
+          const res = await executeCCode(files, actualStdin, compilerOptions, engineMode);
+          result = res.result;
+          usedEngine = res.usedEngine;
+        }
 
         if (usedEngine !== engineMode) {
           setEngineMode(usedEngine);
         }
 
         setRunResult(result);
+
+        // If process is live waiting for input (interactive session), keep isRunning true
+        if (result.isAlive) {
+          setIsRunning(true);
+          return;
+        }
 
         // If compilation failed or runtime error occurred, automatically diagnose with AI
         const hasError =
@@ -290,11 +303,74 @@ export default function App() {
           setIsLoadingDiagnosis(false);
         }
       } finally {
+        if (!runResult?.isAlive) {
+          setIsRunning(false);
+        }
+      }
+    },
+    [isRunning, compilerOptions, files, stdin, engineMode, activeFile, runResult?.isAlive]
+  );
+
+  // Send input to active interactive session
+  const handleSendInteractiveInput = useCallback(
+    async (input: string) => {
+      if (!runResult?.sessionId || !runResult?.isAlive) {
+        handleRun(input, true);
+        return;
+      }
+
+      try {
+        const resp = await sendInteractiveInput(runResult.sessionId, input);
+        setRunResult((prev) => {
+          if (!prev) return null;
+          const newRawStream = [...(prev.rawStream || [])];
+          newRawStream.push({ type: 'stdin', text: input + '\n' });
+          if (resp.stdout) {
+            newRawStream.push({ type: 'stdout', text: resp.stdout });
+          }
+          if (resp.stderr) {
+            newRawStream.push({ type: 'stderr', text: resp.stderr });
+          }
+
+          return {
+            ...prev,
+            stdout: (prev.stdout || '') + (resp.stdout || ''),
+            stderr: (prev.stderr || '') + (resp.stderr || ''),
+            isAlive: resp.isAlive,
+            exitCode: resp.exitCode,
+            executionTimeMs: resp.executionTimeMs,
+            rawStream: newRawStream,
+          };
+        });
+
+        if (!resp.isAlive) {
+          setIsRunning(false);
+        }
+      } catch (err: any) {
+        showToast('Erro ao enviar dados para o processo: ' + err.message, 'info');
         setIsRunning(false);
       }
     },
-    [isRunning, compilerOptions, files, stdin, engineMode, activeFile]
+    [runResult, handleRun]
   );
+
+  // Stop running interactive process
+  const handleStopProcess = useCallback(async () => {
+    if (runResult?.sessionId) {
+      await killInteractiveSession(runResult.sessionId);
+    }
+    setRunResult((prev) =>
+      prev
+        ? {
+            ...prev,
+            isAlive: false,
+            stderr: (prev.stderr || '') + '\n[Processo interrompido pelo usuário]',
+          }
+        : null
+    );
+    setIsRunning(false);
+    showToast('Execução do processo interrompida.', 'info');
+  }, [runResult]);
 
   // Debug action (OnlineGDB style): runs and switches straight to the AI diagnosis / inspection tab
   const handleDebug = async () => {
@@ -660,6 +736,8 @@ export default function App() {
               onRun={handleRun}
               isAwaitingInput={isAwaitingInput}
               onCancelAwaitingInput={() => setIsAwaitingInput(false)}
+              onSendInteractiveInput={handleSendInteractiveInput}
+              onStopProcess={handleStopProcess}
             />
           </div>
         </div>

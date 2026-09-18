@@ -5,6 +5,8 @@ export interface StdinRequirement {
   functions: string[];
   expectedTypeHint?: string;
   detectedPrompts?: string[];
+  expectedInputsCount?: number;
+  formatHints?: string[];
 }
 
 /**
@@ -13,7 +15,7 @@ export interface StdinRequirement {
  */
 export function detectStdinRequirements(files?: SourceFile[] | null): StdinRequirement {
   if (!files || !Array.isArray(files) || files.length === 0) {
-    return { requiresInput: false, functions: [] };
+    return { requiresInput: false, functions: [], expectedInputsCount: 0 };
   }
 
   const allCode = files
@@ -31,7 +33,7 @@ export function detectStdinRequirements(files?: SourceFile[] | null): StdinRequi
   if (/\bgetline\s*\(\s*cin\s*,/.test(allCode)) functions.push('getline');
 
   // Look for printf prompt strings like printf("Digite um número: ")
-  const promptRegex = /printf\s*\(\s*"([^"]*(?:digite|informe|entre|insira|qual|valor|numero|nome|idade|input|enter|type)[^"]*)"/gi;
+  const promptRegex = /printf\s*\(\s*"([^"]*(?:digite|informe|entre|insira|qual|valor|numero|nome|idade|input|enter|type|salario|conta)[^"]*)"/gi;
   const detectedPrompts: string[] = [];
   let match: RegExpExecArray | null;
   while ((match = promptRegex.exec(allCode)) !== null) {
@@ -43,10 +45,14 @@ export function detectStdinRequirements(files?: SourceFile[] | null): StdinRequi
   // Detect format specifiers in scanf, e.g. %d, %s, %f
   const scanfFormatRegex = /scanf\s*\(\s*"([^"]+)"/g;
   const formatHints: string[] = [];
+  let totalFormatCount = 0;
   while ((match = scanfFormatRegex.exec(allCode)) !== null) {
     const fmt = match[1];
+    const specifiers = fmt.match(/%[0-9]*\.?[0-9]*[a-zA-Z]/g) || [];
+    totalFormatCount += Math.max(1, specifiers.length);
+
     if (fmt.includes('%d') || fmt.includes('%i')) formatHints.push('número inteiro (ex: 42)');
-    else if (fmt.includes('%f') || fmt.includes('%lf')) formatHints.push('número decimal (ex: 3.14)');
+    else if (fmt.includes('%f') || fmt.includes('%lf')) formatHints.push('número decimal (ex: 100.50)');
     else if (fmt.includes('%s')) formatHints.push('texto/palavra (ex: Maria)');
     else if (fmt.includes('%c')) formatHints.push('caractere (ex: A)');
   }
@@ -58,6 +64,8 @@ export function detectStdinRequirements(files?: SourceFile[] | null): StdinRequi
     functions,
     expectedTypeHint,
     detectedPrompts: detectedPrompts.length > 0 ? detectedPrompts : undefined,
+    expectedInputsCount: totalFormatCount || (functions.length > 0 ? 1 : 0),
+    formatHints,
   };
 }
 
@@ -69,6 +77,7 @@ export interface TerminalSegment {
 /**
  * Interleaves program stdout and user stdin into an authentic terminal stream.
  * In a real terminal, user input appears right after the prompt printed by the program.
+ * Correctly matches multi-token space-separated or newline-separated inputs across prompts.
  */
 export function interleaveStdoutAndStdin(stdout?: string | null, stdin?: string | null): TerminalSegment[] {
   const safeStdout = typeof stdout === 'string' ? stdout : '';
@@ -83,33 +92,55 @@ export function interleaveStdoutAndStdin(stdout?: string | null, stdin?: string 
     return [{ type: 'stdout', text: safeStdout }];
   }
 
-  const stdinLines = safeStdin
+  // Check how many prompts are in stdout
+  const promptEndRegex = /(:[ \t]*|\?[ \t]*|>[ \t]*)/g;
+  const promptMatches: number[] = [];
+  let pMatch: RegExpExecArray | null;
+  while ((pMatch = promptEndRegex.exec(safeStdout)) !== null) {
+    promptMatches.push(pMatch.index + pMatch[0].length);
+  }
+
+  // Parse stdin into tokens:
+  // If user entered line breaks, use line breaks.
+  // If user entered a single line with space-separated tokens and multiple prompts exist, split by spaces!
+  const rawLines = safeStdin
     .split('\n')
     .map((s) => s.trim())
     .filter(Boolean);
 
-  if (stdinLines.length === 0) {
+  let stdinTokens: string[] = [];
+  if (rawLines.length > 1) {
+    stdinTokens = rawLines;
+  } else if (rawLines.length === 1) {
+    if (promptMatches.length > 1) {
+      // Multiple prompts detected, split single-line input by spaces so each prompt gets its token
+      stdinTokens = rawLines[0].split(/\s+/).filter(Boolean);
+    } else {
+      stdinTokens = [rawLines[0]];
+    }
+  }
+
+  if (stdinTokens.length === 0) {
     return [{ type: 'stdout', text: safeStdout }];
   }
 
-  // Look for common interactive prompt endings in stdout, like "Digite sua idade: " or "? "
-  const promptEndRegex = /(:[ \t]*|\?[ \t]*|>[ \t]*)/g;
   const segments: TerminalSegment[] = [];
   let lastIndex = 0;
   let stdinIndex = 0;
-  let match: RegExpExecArray | null;
 
-  while ((match = promptEndRegex.exec(safeStdout)) !== null && stdinIndex < stdinLines.length) {
-    const promptEnd = match.index + match[0].length;
+  for (const promptEnd of promptMatches) {
+    if (stdinIndex >= stdinTokens.length) break;
+
     segments.push({
       type: 'stdout',
       text: safeStdout.substring(lastIndex, promptEnd),
     });
-    // Echo the input line as user entered it with a trailing newline
+
     segments.push({
       type: 'stdin',
-      text: stdinLines[stdinIndex] + '\n',
+      text: stdinTokens[stdinIndex] + '\n',
     });
+
     lastIndex = promptEnd;
     stdinIndex++;
   }
@@ -122,11 +153,11 @@ export function interleaveStdoutAndStdin(stdout?: string | null, stdin?: string 
     });
   }
 
-  // Any remaining stdin lines that didn't have matching prompts
-  while (stdinIndex < stdinLines.length) {
+  // Any remaining stdin tokens that didn't have matching prompts in stdout
+  while (stdinIndex < stdinTokens.length) {
     segments.push({
       type: 'stdin',
-      text: stdinLines[stdinIndex] + '\n',
+      text: stdinTokens[stdinIndex] + '\n',
     });
     stdinIndex++;
   }

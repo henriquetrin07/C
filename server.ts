@@ -320,7 +320,8 @@ app.post("/api/compile-run", async (req, res) => {
       let stderrBuf = "";
       const maxOutputBytes = 512 * 1024; // 512KB cap
 
-      const proc = spawn(outBinary, [], {
+      // Use stdbuf to disable stdout/stderr buffering, essential for interactive C programs and scanf
+      const proc = spawn("stdbuf", ["-i0", "-o0", "-e0", outBinary], {
         cwd: tempDir,
         env: {
           PATH: process.env.PATH,
@@ -332,7 +333,7 @@ app.post("/api/compile-run", async (req, res) => {
       const timer = setTimeout(() => {
         timedOut = true;
         proc.kill("SIGKILL");
-      }, 6000); // 6 seconds execution limit
+      }, 8000); // 8 seconds execution limit
 
       if (stdin) {
         try {
@@ -414,6 +415,329 @@ app.post("/api/compile-run", async (req, res) => {
       } catch {}
     }
   }
+});
+
+// Interactive Session Management (OnlineGDB style live console)
+interface InteractiveSession {
+  id: string;
+  proc: any;
+  tempDir: string;
+  compiler: string;
+  compileOutput: string;
+  compilationTimeMs: number;
+  stdoutBuf: string;
+  stderrBuf: string;
+  lastReadStdoutIndex: number;
+  lastReadStderrIndex: number;
+  isAlive: boolean;
+  exitCode: number | null;
+  timedOut: boolean;
+  createdAt: number;
+  lastActive: number;
+  timer: NodeJS.Timeout | null;
+}
+
+const interactiveSessions = new Map<string, InteractiveSession>();
+
+function killInteractiveSession(sessionId: string) {
+  const sess = interactiveSessions.get(sessionId);
+  if (!sess) return;
+  if (sess.timer) clearTimeout(sess.timer);
+  sess.isAlive = false;
+  if (sess.proc) {
+    try {
+      sess.proc.kill("SIGKILL");
+    } catch {}
+  }
+  interactiveSessions.delete(sessionId);
+  if (sess.tempDir) {
+    fs.rm(sess.tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+// Clean up dead or abandoned sessions periodically (every 30 seconds)
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, sess] of interactiveSessions.entries()) {
+    if (now - sess.lastActive > 90000 || !sess.isAlive) {
+      killInteractiveSession(id);
+    }
+  }
+}, 30000);
+
+// Endpoint 1: Start interactive execution
+app.post("/api/interactive/start", async (req, res) => {
+  const files: FileItem[] = req.body.files || [];
+  const initialStdin: string = typeof req.body.stdin === "string" ? req.body.stdin : "";
+  const standard = req.body.standard || "c11";
+  const optimization = req.body.optimization || "-O0";
+  const customFlags: string[] = Array.isArray(req.body.flags) ? req.body.flags : [];
+
+  let tempDir = "";
+  try {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "c_interactive_"));
+
+    // Write source files
+    const sourceFiles: string[] = [];
+    for (const file of files) {
+      const safeName = sanitizeFilename(file.name);
+      const filePath = path.join(tempDir, safeName);
+      await fs.writeFile(filePath, file.content, "utf8");
+      if (safeName.endsWith(".c")) {
+        sourceFiles.push(safeName);
+      }
+    }
+
+    if (sourceFiles.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Nenhum arquivo de código C (.c) encontrado para compilar.",
+      });
+    }
+
+    const outBinary = path.join(tempDir, "program_bin");
+    const compileArgs: string[] = [`-std=${standard}`];
+    if (optimization) compileArgs.push(optimization);
+    compileArgs.push("-Wall", "-Wextra");
+    for (const flag of customFlags) {
+      if (typeof flag === "string" && flag.startsWith("-") && flag.length < 30) {
+        compileArgs.push(flag);
+      }
+    }
+    compileArgs.push("-lm", ...sourceFiles, "-o", outBinary);
+
+    const compileStart = Date.now();
+    let compileOutput = "";
+    let compileSuccess = true;
+
+    try {
+      const compileProc = await execFileAsync("gcc", compileArgs, {
+        cwd: tempDir,
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      compileOutput = (compileProc.stderr || compileProc.stdout || "").trim();
+    } catch (err: any) {
+      compileSuccess = false;
+      compileOutput = (err.stderr || err.stdout || err.message || "Erro de compilação.").trim();
+    }
+
+    const compilationTimeMs = Date.now() - compileStart;
+
+    if (!compileSuccess) {
+      try {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      } catch {}
+      return res.json({
+        success: false,
+        phase: "compilation",
+        compiler: "gcc",
+        compileOutput,
+        compilationTimeMs,
+        stdout: "",
+        stderr: "",
+        exitCode: 1,
+      });
+    }
+
+    // Spawn process unbuffered with stdbuf
+    const sessionId = "sess_" + Date.now() + "_" + Math.random().toString(36).substring(2, 9);
+    const proc = spawn("stdbuf", ["-i0", "-o0", "-e0", outBinary], {
+      cwd: tempDir,
+      env: {
+        PATH: process.env.PATH,
+        LANG: "pt_BR.UTF-8",
+        LC_ALL: "C.UTF-8",
+      },
+    });
+
+    const session: InteractiveSession = {
+      id: sessionId,
+      proc,
+      tempDir,
+      compiler: "gcc",
+      compileOutput,
+      compilationTimeMs,
+      stdoutBuf: "",
+      stderrBuf: "",
+      lastReadStdoutIndex: 0,
+      lastReadStderrIndex: 0,
+      isAlive: true,
+      exitCode: null,
+      timedOut: false,
+      createdAt: Date.now(),
+      lastActive: Date.now(),
+      timer: null,
+    };
+
+    // Auto-kill session after 60 seconds if abandoned
+    session.timer = setTimeout(() => {
+      session.timedOut = true;
+      killInteractiveSession(sessionId);
+    }, 60000);
+
+    proc.stdout.on("data", (chunk: Buffer) => {
+      session.stdoutBuf += chunk.toString("utf8");
+    });
+
+    proc.stderr.on("data", (chunk: Buffer) => {
+      session.stderrBuf += chunk.toString("utf8");
+    });
+
+    proc.on("close", (code, signal) => {
+      session.isAlive = false;
+      session.exitCode = code !== null ? code : (signal ? 128 : 0);
+    });
+
+    proc.on("error", (err) => {
+      session.isAlive = false;
+      session.stderrBuf += `\nErro de processo: ${err.message}`;
+      session.exitCode = -1;
+    });
+
+    interactiveSessions.set(sessionId, session);
+
+    // If initial stdin was passed, feed it to the process
+    if (initialStdin) {
+      try {
+        proc.stdin.write(initialStdin);
+      } catch {}
+    }
+
+    // Wait up to 150ms for initial output (e.g. first prompt before scanf)
+    await new Promise<void>((resolve) => {
+      let done = false;
+      const onData = () => {
+        if (!done) {
+          done = true;
+          clearTimeout(waitTimer);
+          setTimeout(resolve, 40);
+        }
+      };
+      proc.stdout.once("data", onData);
+      proc.once("close", onData);
+      const waitTimer = setTimeout(() => {
+        done = true;
+        proc.stdout.removeListener("data", onData);
+        proc.removeListener("close", onData);
+        resolve();
+      }, 150);
+    });
+
+    const newStdout = session.stdoutBuf.substring(session.lastReadStdoutIndex);
+    session.lastReadStdoutIndex = session.stdoutBuf.length;
+    const newStderr = session.stderrBuf.substring(session.lastReadStderrIndex);
+    session.lastReadStderrIndex = session.stderrBuf.length;
+
+    // If already finished and not alive, clean up after 5s
+    if (!session.isAlive) {
+      setTimeout(() => killInteractiveSession(sessionId), 5000);
+    }
+
+    return res.json({
+      success: true,
+      phase: session.isAlive ? "execution" : "idle",
+      compiler: "gcc",
+      sessionId,
+      compileOutput,
+      compilationTimeMs,
+      stdout: newStdout,
+      fullStdout: session.stdoutBuf,
+      stderr: newStderr,
+      isAlive: session.isAlive,
+      exitCode: session.exitCode,
+      executionTimeMs: Date.now() - session.createdAt,
+    });
+  } catch (err: any) {
+    if (tempDir) {
+      try {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      } catch {}
+    }
+    return res.status(500).json({
+      success: false,
+      error: err.message || "Erro ao iniciar sessão interativa.",
+    });
+  }
+});
+
+// Endpoint 2: Send input to running interactive session
+app.post("/api/interactive/input", async (req, res) => {
+  const { sessionId, input } = req.body || {};
+  if (!sessionId) {
+    return res.status(400).json({ success: false, error: "sessionId é obrigatório." });
+  }
+
+  const session = interactiveSessions.get(sessionId);
+  if (!session || !session.isAlive) {
+    return res.json({
+      success: false,
+      sessionId,
+      isAlive: false,
+      stdout: "",
+      stderr: "",
+      exitCode: session ? session.exitCode : 0,
+      error: "O processo já foi finalizado.",
+    });
+  }
+
+  session.lastActive = Date.now();
+
+  const textToSend = typeof input === "string" ? (input.endsWith("\n") ? input : input + "\n") : "\n";
+  try {
+    session.proc.stdin.write(textToSend);
+  } catch (err: any) {
+    // Process may have exited right before write
+  }
+
+  // Wait up to 180ms for process to consume input and produce output
+  await new Promise<void>((resolve) => {
+    let done = false;
+    const onData = () => {
+      if (!done) {
+        done = true;
+        clearTimeout(waitTimer);
+        setTimeout(resolve, 40);
+      }
+    };
+    session.proc.stdout.once("data", onData);
+    session.proc.once("close", onData);
+    const waitTimer = setTimeout(() => {
+      done = true;
+      session.proc.stdout.removeListener("data", onData);
+      session.proc.removeListener("close", onData);
+      resolve();
+    }, 180);
+  });
+
+  const newStdout = session.stdoutBuf.substring(session.lastReadStdoutIndex);
+  session.lastReadStdoutIndex = session.stdoutBuf.length;
+  const newStderr = session.stderrBuf.substring(session.lastReadStderrIndex);
+  session.lastReadStderrIndex = session.stderrBuf.length;
+
+  if (!session.isAlive) {
+    setTimeout(() => killInteractiveSession(sessionId), 5000);
+  }
+
+  return res.json({
+    success: true,
+    sessionId,
+    stdout: newStdout,
+    fullStdout: session.stdoutBuf,
+    stderr: newStderr,
+    isAlive: session.isAlive,
+    exitCode: session.exitCode,
+    executionTimeMs: Date.now() - session.createdAt,
+  });
+});
+
+// Endpoint 3: Kill interactive session (Stop button)
+app.post("/api/interactive/kill", async (req, res) => {
+  const { sessionId } = req.body || {};
+  if (sessionId) {
+    killInteractiveSession(sessionId);
+  }
+  return res.json({ success: true });
 });
 
 // Endpoint to inspect generated x86_64 assembly code

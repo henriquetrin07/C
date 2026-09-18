@@ -267,6 +267,101 @@ export async function executeCCode(
   };
 }
 
+// Interactive live GCC execution sessions (OnlineGDB style)
+export async function startInteractiveSession(
+  files: SourceFile[],
+  stdin: string,
+  options: CompilerOptions
+): Promise<RunResult> {
+  const flags: string[] = [];
+  if (options.enablePedantic) flags.push('-pedantic');
+  if (typeof options.customFlags === 'string' && options.customFlags.trim()) {
+    const parts = options.customFlags.trim().split(/\s+/);
+    flags.push(...parts);
+  }
+
+  const res = await fetch('/api/interactive/start', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({
+      files: files.map((f) => ({ name: f.name, content: f.content })),
+      stdin: typeof stdin === 'string' ? stdin : '',
+      compiler: options.compiler,
+      standard: options.standard,
+      optimization: options.optimization,
+      flags,
+    }),
+  });
+
+  const data = await res.json();
+  const rawDiagText = (data.compileOutput || '') + '\n' + (data.stderr || '');
+  const diagnostics = parseCompilerDiagnostics(rawDiagText);
+
+  const rawStream: Array<{ type: 'stdout' | 'stdin' | 'stderr' | 'system'; text: string }> = [];
+  if (data.stdout) {
+    rawStream.push({ type: 'stdout', text: data.stdout });
+  }
+  if (data.stderr) {
+    rawStream.push({ type: 'stderr', text: data.stderr });
+  }
+
+  return {
+    success: Boolean(data.success),
+    phase: data.phase || (data.isAlive ? 'execution' : 'idle'),
+    compiler: data.compiler || options.compiler,
+    compileOutput: data.compileOutput || '',
+    compilationTimeMs: data.compilationTimeMs || 0,
+    stdout: data.stdout || '',
+    stderr: data.stderr || '',
+    exitCode: data.exitCode !== undefined ? data.exitCode : null,
+    timedOut: Boolean(data.timedOut),
+    executionTimeMs: data.executionTimeMs || 0,
+    error: data.error,
+    diagnostics,
+    sessionId: data.sessionId,
+    isAlive: Boolean(data.isAlive),
+    rawStream,
+  };
+}
+
+export async function sendInteractiveInput(
+  sessionId: string,
+  input: string
+): Promise<{
+  success: boolean;
+  sessionId: string;
+  stdout: string;
+  fullStdout: string;
+  stderr: string;
+  isAlive: boolean;
+  exitCode: number | null;
+  executionTimeMs: number;
+  error?: string;
+}> {
+  const res = await fetch('/api/interactive/input', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({ sessionId, input }),
+  });
+  return await res.json();
+}
+
+export async function killInteractiveSession(sessionId: string): Promise<void> {
+  try {
+    await fetch('/api/interactive/kill', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId }),
+    });
+  } catch {}
+}
+
 // Generate Assembly code: tries local server first, falls back to Cloud GCC assembly
 export async function generateAssembly(
   code: string,

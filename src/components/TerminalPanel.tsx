@@ -42,6 +42,8 @@ interface TerminalPanelProps {
   onRun?: (overrideStdin?: string, skipInputPrompt?: boolean) => void | Promise<void>;
   isAwaitingInput?: boolean;
   onCancelAwaitingInput?: () => void;
+  onSendInteractiveInput?: (input: string) => void | Promise<void>;
+  onStopProcess?: () => void | Promise<void>;
 }
 
 export const TerminalPanel: React.FC<TerminalPanelProps> = ({
@@ -65,6 +67,8 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
   onRun,
   isAwaitingInput = false,
   onCancelAwaitingInput,
+  onSendInteractiveInput,
+  onStopProcess,
 }) => {
   const [copied, setCopied] = useState(false);
   const [consoleInput, setConsoleInput] = useState('');
@@ -115,14 +119,33 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
     }
   };
 
+  // Auto-focus console input whenever awaiting user input in live process
+  useEffect(() => {
+    if (runResult?.isAlive || isAwaitingInput) {
+      setTimeout(() => {
+        inputRef.current?.focus();
+      }, 50);
+    }
+  }, [runResult?.isAlive, isAwaitingInput]);
+
   // Handle submitting user input in the console
   const handleSendInput = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const val = consoleInput.trim();
-
     const currentStdin = typeof stdin === 'string' ? stdin : '';
 
-    // If awaiting input and user presses Enter with empty, run with empty (EOF)
+    // 1. If an active interactive session is live and running on server
+    if (runResult?.sessionId && runResult?.isAlive && onSendInteractiveInput) {
+      onSendInteractiveInput(val);
+      if (val) {
+        setInputHistory((prev) => [...prev.filter((h) => h !== val), val]);
+        setHistoryPointer(-1);
+      }
+      setConsoleInput('');
+      return;
+    }
+
+    // 2. If awaiting input in idle state
     if (isAwaitingInput && !val && !currentStdin.trim()) {
       if (onRun) onRun('', true);
       return;
@@ -135,7 +158,8 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
       setHistoryPointer(-1);
     }
 
-    const newStdin = val || currentStdin;
+    // If there's already stdin, append new line so multiple scanf can read them sequentially
+    const newStdin = currentStdin.trim() ? `${currentStdin.trim()}\n${val}` : val;
     onStdinChange(newStdin);
     setConsoleInput('');
 
@@ -449,8 +473,26 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
                     </div>
                   )}
 
-                  {/* Program stdout with interleaved user input */}
-                  {runResult.stdout ? (
+                  {/* Program stdout with interleaved user input or rawStream */}
+                  {runResult.rawStream && runResult.rawStream.length > 0 ? (
+                    <div className="bg-slate-950 p-3 rounded border border-slate-800/60 font-mono text-[12px] leading-relaxed whitespace-pre-wrap">
+                      {runResult.rawStream.map((seg, idx) =>
+                        seg.type === 'stdin' ? (
+                          <span key={idx} className="text-cyan-300 font-bold underline decoration-cyan-500/40">
+                            {seg.text}
+                          </span>
+                        ) : seg.type === 'stderr' ? (
+                          <span key={idx} className="text-rose-400 font-mono">
+                            {seg.text}
+                          </span>
+                        ) : (
+                          <span key={idx} className="text-slate-100">
+                            {seg.text}
+                          </span>
+                        )
+                      )}
+                    </div>
+                  ) : runResult.stdout ? (
                     <div className="bg-slate-950 p-3 rounded border border-slate-800/60 font-mono text-[12px] leading-relaxed whitespace-pre-wrap">
                       {interleaveStdoutAndStdin(runResult.stdout || '', safeStdin).map((seg, idx) =>
                         seg.type === 'stdin' ? (
@@ -466,35 +508,58 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
                     </div>
                   ) : null}
 
-                  {/* Program stderr */}
-                  {runResult.stderr && (
+                  {/* Program stderr if not in rawStream */}
+                  {(!runResult.rawStream || runResult.rawStream.length === 0) && runResult.stderr && (
                     <div className="text-rose-400 whitespace-pre-wrap font-mono text-[12px] bg-rose-950/20 p-2.5 rounded border border-rose-900/50">
                       {runResult.stderr}
                     </div>
                   )}
 
-                  {/* Process termination line (Classic OnlineGDB style) */}
-                  <div className="text-slate-500 text-[11px] pt-2 border-t border-slate-800/60 font-mono flex items-center justify-between">
-                    <div>
-                      --------------------------------
-                      <br />
-                      Process returned {runResult.exitCode ?? 0} (0x{((runResult.exitCode ?? 0) >>> 0).toString(16).toUpperCase()}) &nbsp;
-                      execution time : {formatDuration(runResult.executionTimeMs)}
+                  {/* Live running status OR process termination line */}
+                  {runResult.isAlive ? (
+                    <div className="flex items-center justify-between p-2.5 rounded bg-emerald-950/30 border border-emerald-800/50 text-emerald-300 text-xs font-sans">
+                      <div className="flex items-center space-x-2">
+                        <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+                        <span className="font-semibold text-slate-100">
+                          Programa em execução aguardando entrada (scanf)...
+                        </span>
+                        <span className="hidden sm:inline text-slate-400 text-[11px]">
+                          Digite o valor abaixo e pressione Enter.
+                        </span>
+                      </div>
+                      {onStopProcess && (
+                        <button
+                          type="button"
+                          onClick={onStopProcess}
+                          className="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded text-xs font-semibold flex items-center gap-1 transition-colors shadow-sm"
+                        >
+                          <span>Parar</span>
+                        </button>
+                      )}
                     </div>
-                    {Boolean(safeStdin.trim()) && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onStdinChange('');
-                          if (onRun) onRun('', true);
-                        }}
-                        className="text-[11px] text-slate-400 hover:text-slate-200 flex items-center gap-1 font-sans transition-colors"
-                      >
-                        <RotateCcw className="w-3 h-3" />
-                        <span>Limpar Entrada</span>
-                      </button>
-                    )}
-                  </div>
+                  ) : (
+                    <div className="text-slate-500 text-[11px] pt-2 border-t border-slate-800/60 font-mono flex items-center justify-between">
+                      <div>
+                        --------------------------------
+                        <br />
+                        Process returned {runResult.exitCode ?? 0} (0x{((runResult.exitCode ?? 0) >>> 0).toString(16).toUpperCase()}) &nbsp;
+                        execution time : {formatDuration(runResult.executionTimeMs)}
+                      </div>
+                      {Boolean(safeStdin.trim()) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onStdinChange('');
+                            if (onRun) onRun('', true);
+                          }}
+                          className="text-[11px] text-slate-400 hover:text-slate-200 flex items-center gap-1 font-sans transition-colors"
+                        >
+                          <RotateCcw className="w-3 h-3" />
+                          <span>Limpar Entrada</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -502,10 +567,17 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
             {/* Interactive Console Input Bar (Always accessible in Console tab) */}
             <form
               onSubmit={handleSendInput}
-              className="flex items-center gap-2 px-3 py-2 bg-[#121822] border-t border-slate-800 select-none flex-shrink-0"
+              className={`flex items-center gap-2 px-3 py-2 border-t select-none flex-shrink-0 transition-colors ${
+                runResult?.isAlive
+                  ? 'bg-[#0f172a] border-emerald-500/50 shadow-[0_-2px_8px_rgba(16,185,129,0.15)]'
+                  : 'bg-[#121822] border-slate-800'
+              }`}
             >
               {/* Terminal prompt symbol */}
               <div className="flex items-center text-emerald-400 font-mono font-bold text-xs pl-1">
+                {runResult?.isAlive ? (
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping mr-1" />
+                ) : null}
                 <span>$</span>
                 <span className="text-slate-600 mx-1.5">|</span>
               </div>
@@ -517,12 +589,31 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
                 value={consoleInput}
                 onChange={(e) => setConsoleInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Inserir entrada (stdin) para o programa e tecle Enter..."
-                className="flex-1 bg-slate-950 border border-slate-700/80 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/30 rounded px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 font-mono focus:outline-none transition-colors"
+                placeholder={
+                  runResult?.isAlive
+                    ? 'Digite aqui o valor para o scanf e tecle Enter...'
+                    : 'Inserir entrada (stdin) para o programa e tecle Enter...'
+                }
+                className={`flex-1 bg-slate-950 border rounded px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 font-mono focus:outline-none transition-colors ${
+                  runResult?.isAlive
+                    ? 'border-emerald-500 focus:ring-1 focus:ring-emerald-400'
+                    : 'border-slate-700/80 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/30'
+                }`}
               />
 
+              {/* Stop button if running live */}
+              {runResult?.isAlive && onStopProcess && (
+                <button
+                  type="button"
+                  onClick={onStopProcess}
+                  className="px-2.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded text-xs font-sans font-semibold transition-colors shadow-sm"
+                >
+                  Parar
+                </button>
+              )}
+
               {/* Quick toggle for standard input drawer if not open */}
-              {!showStdinBox && (
+              {!showStdinBox && !runResult?.isAlive && (
                 <button
                   type="button"
                   onClick={() => setShowStdinBox(true)}
@@ -535,7 +626,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
               )}
 
               {/* Clear button if stdin has value */}
-              {Boolean(safeStdin.trim()) && (
+              {Boolean(safeStdin.trim()) && !runResult?.isAlive && (
                 <button
                   type="button"
                   onClick={() => {
@@ -553,7 +644,11 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
               {/* Submit button */}
               <button
                 type="submit"
-                disabled={isRunning || (!consoleInput.trim() && !safeStdin.trim())}
+                disabled={
+                  isRunning && !runResult?.isAlive
+                    ? true
+                    : !runResult?.isAlive && !consoleInput.trim() && !safeStdin.trim()
+                }
                 className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded text-xs font-sans font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
               >
                 <span>Enviar</span>

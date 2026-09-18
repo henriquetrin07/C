@@ -11,8 +11,16 @@ export interface StdinRequirement {
  * Detects if C source code contains functions that read from stdin,
  * and extracts any user prompt messages found before them.
  */
-export function detectStdinRequirements(files: SourceFile[]): StdinRequirement {
-  const allCode = files.map((f) => f.content).join('\n');
+export function detectStdinRequirements(files?: SourceFile[] | null): StdinRequirement {
+  if (!files || !Array.isArray(files) || files.length === 0) {
+    return { requiresInput: false, functions: [] };
+  }
+
+  const allCode = files
+    .filter(Boolean)
+    .map((f) => (typeof f?.content === 'string' ? f.content : ''))
+    .join('\n');
+
   const functions: string[] = [];
 
   if (/\bscanf\s*\(/.test(allCode)) functions.push('scanf');
@@ -62,36 +70,39 @@ export interface TerminalSegment {
  * Interleaves program stdout and user stdin into an authentic terminal stream.
  * In a real terminal, user input appears right after the prompt printed by the program.
  */
-export function interleaveStdoutAndStdin(stdout: string, stdin: string): TerminalSegment[] {
-  if (!stdout) {
-    if (!stdin) return [];
-    return [{ type: 'stdin', text: stdin }];
+export function interleaveStdoutAndStdin(stdout?: string | null, stdin?: string | null): TerminalSegment[] {
+  const safeStdout = typeof stdout === 'string' ? stdout : '';
+  const safeStdin = typeof stdin === 'string' ? stdin : '';
+
+  if (!safeStdout) {
+    if (!safeStdin.trim()) return [];
+    return [{ type: 'stdin', text: safeStdin }];
   }
 
-  if (!stdin.trim()) {
-    return [{ type: 'stdout', text: stdout }];
+  if (!safeStdin.trim()) {
+    return [{ type: 'stdout', text: safeStdout }];
   }
 
-  const stdinLines = stdin
+  const stdinLines = safeStdin
     .split('\n')
     .map((s) => s.trim())
     .filter(Boolean);
 
   if (stdinLines.length === 0) {
-    return [{ type: 'stdout', text: stdout }];
+    return [{ type: 'stdout', text: safeStdout }];
   }
 
   // Look for common interactive prompt endings in stdout, like "Digite sua idade: " or "? "
   const promptEndRegex = /(:\s*|\?\s*|\n(?=[A-ZÀ-Ú0-9]))/g;
   let firstPromptIndex = -1;
-  const match = promptEndRegex.exec(stdout);
+  const match = promptEndRegex.exec(safeStdout);
   if (match) {
     firstPromptIndex = match.index + match[0].length;
   }
 
-  if (firstPromptIndex > 0 && firstPromptIndex < stdout.length) {
-    const beforePrompt = stdout.substring(0, firstPromptIndex);
-    const afterPrompt = stdout.substring(firstPromptIndex);
+  if (firstPromptIndex > 0 && firstPromptIndex < safeStdout.length) {
+    const beforePrompt = safeStdout.substring(0, firstPromptIndex);
+    const afterPrompt = safeStdout.substring(firstPromptIndex);
 
     const segments: TerminalSegment[] = [
       { type: 'stdout', text: beforePrompt },
@@ -110,7 +121,7 @@ export function interleaveStdoutAndStdin(stdout: string, stdin: string): Termina
 
   // Default fallback: prompt lines followed by user input then remaining output
   return [
-    { type: 'stdout', text: stdout },
+    { type: 'stdout', text: safeStdout },
     ...stdinLines.map((inp) => ({ type: 'stdin' as const, text: inp })),
   ];
 }

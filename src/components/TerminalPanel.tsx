@@ -82,7 +82,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
 
   // Detect if C code has scanf, getchar, fgets, cin, etc.
   const stdinReq = useMemo(
-    () => detectStdinRequirements(files && files.length > 0 ? files : [activeFile]),
+    () => detectStdinRequirements(files && files.length > 0 ? files : activeFile ? [activeFile] : []),
     [files, activeFile]
   );
 
@@ -117,20 +117,22 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
     if (e) e.preventDefault();
     const val = consoleInput.trim();
 
+    const currentStdin = typeof stdin === 'string' ? stdin : '';
+
     // If awaiting input and user presses Enter with empty, run with empty (EOF)
-    if (isAwaitingInput && !val && !stdin.trim()) {
+    if (isAwaitingInput && !val && !currentStdin.trim()) {
       if (onRun) onRun('', true);
       return;
     }
 
-    if (!val && !stdin.trim()) return;
+    if (!val && !currentStdin.trim()) return;
 
     if (val) {
       setInputHistory((prev) => [...prev.filter((h) => h !== val), val]);
       setHistoryPointer(-1);
     }
 
-    const newStdin = val || stdin;
+    const newStdin = val || currentStdin;
     onStdinChange(newStdin);
     setConsoleInput('');
 
@@ -226,7 +228,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
           >
             <Keyboard className="w-3.5 h-3.5" />
             <span>Entrada (stdin)</span>
-            {stdin.trim() && <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />}
+            {Boolean(typeof stdin === 'string' && stdin.trim()) && <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />}
           </button>
 
           {/* Diagnostics Tab */}
@@ -300,7 +302,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
           )}
 
           {/* Stdin Indicator Pill in Header */}
-          {stdin.trim() && (
+          {Boolean(typeof stdin === 'string' && stdin.trim()) && (
             <div className="hidden sm:flex items-center gap-1 px-2 py-0.5 rounded bg-blue-950/60 border border-blue-800/60 text-blue-300 text-[10px] font-mono">
               <span>stdin: {stdin.length > 12 ? stdin.substring(0, 12) + '...' : stdin}</span>
             </div>
@@ -441,8 +443,8 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
                 <div className="space-y-2.5">
                   {/* Compilation command simulated strip */}
                   <div className="text-slate-500 text-[11px] pb-1 border-b border-slate-800/80 flex items-center justify-between">
-                    <span>$ gcc -std=c11 -O0 -Wall -Wextra {activeFile.name} -lm && ./a.out</span>
-                    <span className="text-slate-600">{runResult.compiler.toUpperCase()} 64-bit</span>
+                    <span>$ gcc -std=c11 -O0 -Wall -Wextra {activeFile?.name || 'main.c'} -lm && ./a.out</span>
+                    <span className="text-slate-600">{(runResult?.compiler || 'gcc').toUpperCase()} 64-bit</span>
                   </div>
 
                   {/* Compiler Diagnostics Output if Warnings/Errors */}
@@ -463,7 +465,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
                   {/* Program stdout with interleaved user input */}
                   {runResult.stdout ? (
                     <div className="bg-slate-950/70 p-3 rounded border border-slate-800/60 space-y-1">
-                      {interleaveStdoutAndStdin(runResult.stdout, stdin).map((seg, idx) =>
+                      {interleaveStdoutAndStdin(runResult.stdout || '', stdin || '').map((seg, idx) =>
                         seg.type === 'stdin' ? (
                           <div key={idx} className="my-1.5 flex items-center gap-2">
                             <span className="text-emerald-400 font-bold select-none font-mono">&gt;</span>
@@ -491,7 +493,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
                   )}
 
                   {/* Hint if program has scanf and no input was provided */}
-                  {stdinReq.requiresInput && !stdin.trim() && (
+                  {Boolean(stdinReq.requiresInput && !(typeof stdin === 'string' && stdin.trim())) && (
                     <div className="bg-slate-900/60 border border-slate-800 rounded p-2 text-xs font-sans text-slate-400 flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
                         <Keyboard className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
@@ -509,7 +511,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
                       Process returned {runResult.exitCode ?? 0} (0x{((runResult.exitCode ?? 0) >>> 0).toString(16).toUpperCase()}) &nbsp;
                       execution time : {formatDuration(runResult.executionTimeMs)}
                     </div>
-                    {stdin.trim() && (
+                    {Boolean(typeof stdin === 'string' && stdin.trim()) && (
                       <button
                         type="button"
                         onClick={() => {

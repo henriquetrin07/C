@@ -209,21 +209,15 @@ export default function App() {
     async (overrideStdin?: string, skipInputPrompt?: boolean) => {
       if (isRunning) return;
 
-      const actualStdin = overrideStdin !== undefined ? overrideStdin : stdin;
+      const actualStdin = typeof overrideStdin === 'string' ? overrideStdin : (typeof stdin === 'string' ? stdin : '');
       if (overrideStdin !== undefined && overrideStdin !== stdin) {
         setStdin(overrideStdin);
       }
 
       // Check if C code has scanf/getchar/fgets and no stdin has been provided yet
       const stdinReq = detectStdinRequirements(files);
-      if (stdinReq.requiresInput && !actualStdin.trim() && !skipInputPrompt) {
-        setTerminalTab('output');
-        setIsAwaitingInput(true);
-        setRunResult(null);
-        return;
-      }
-
-      setIsAwaitingInput(false);
+      const needsInput = Boolean(stdinReq.requiresInput && !actualStdin.trim() && !skipInputPrompt);
+      setIsAwaitingInput(needsInput);
       setIsRunning(true);
       setHighlightedLine(null);
       setTerminalTab('output');
@@ -277,8 +271,8 @@ export default function App() {
         const fakeErrResult: RunResult = {
           success: false,
           phase: 'compilation',
-          compiler: compilerOptions.compiler,
-          compileOutput: `Erro ao processar execução: ${err.message}`,
+          compiler: compilerOptions?.compiler || 'gcc',
+          compileOutput: `Erro ao processar execução: ${err?.message || String(err) || 'Erro desconhecido'}`,
           compilationTimeMs: 0,
           stdout: '',
           stderr: '',
@@ -287,12 +281,17 @@ export default function App() {
         };
         setRunResult(fakeErrResult);
         setIsLoadingDiagnosis(true);
-        analyzeErrorWithAI(activeFile, files, fakeErrResult)
-          .then((diag) => {
-            setDiagnosis(diag);
-            setIsLoadingDiagnosis(false);
-          })
-          .catch(() => setIsLoadingDiagnosis(false));
+        try {
+          const currentFile = activeFile || files[0] || { id: 'f1', name: 'main.c', content: '' };
+          analyzeErrorWithAI(currentFile, files, fakeErrResult)
+            .then((diag) => {
+              setDiagnosis(diag);
+              setIsLoadingDiagnosis(false);
+            })
+            .catch(() => setIsLoadingDiagnosis(false));
+        } catch {
+          setIsLoadingDiagnosis(false);
+        }
       } finally {
         setIsRunning(false);
       }
@@ -307,10 +306,11 @@ export default function App() {
     try {
       const { result } = await executeCCode(files, stdin, compilerOptions, engineMode);
       setRunResult(result);
-      const diag = await analyzeErrorWithAI(activeFile, files, result);
+      const currentFile = activeFile || files[0] || { id: 'f1', name: 'main.c', content: '' };
+      const diag = await analyzeErrorWithAI(currentFile, files, result);
       setDiagnosis(diag);
     } catch (err: any) {
-      showToast('Falha na depuração: ' + err.message, 'info');
+      showToast('Falha na depuração: ' + (err?.message || 'Erro'), 'info');
     } finally {
       setIsLoadingDiagnosis(false);
     }
@@ -318,15 +318,16 @@ export default function App() {
 
   // Beautify action: auto-format C code
   const handleBeautify = () => {
-    if (!activeFile) return;
-    const formatted = formatCCode(activeFile.content);
+    const currentFile = activeFile || files[0];
+    if (!currentFile) return;
+    const formatted = formatCCode(currentFile.content);
     handleUpdateCode(formatted);
     showToast('Código C formatado ({ } Beautify)!');
   };
 
   // Apply AI Fix to code
   const handleApplyFix = (fixedCode: string, fileName?: string) => {
-    const targetName = fileName || activeFile.name;
+    const targetName = fileName || activeFile?.name || files[0]?.name || 'main.c';
     setFiles((prev) =>
       prev.map((f) => (f.name === targetName ? { ...f, content: fixedCode } : f))
     );
@@ -338,10 +339,11 @@ export default function App() {
     setIsLoadingDiagnosis(true);
     setTerminalTab('ai');
     try {
-      const diag = await analyzeErrorWithAI(activeFile, files, runResult, customQuestion);
+      const currentFile = activeFile || files[0] || { id: 'f1', name: 'main.c', content: '' };
+      const diag = await analyzeErrorWithAI(currentFile, files, runResult, customQuestion);
       setDiagnosis(diag);
     } catch (err: any) {
-      showToast('Erro ao consultar IA: ' + err.message, 'info');
+      showToast('Erro ao consultar IA: ' + (err?.message || 'Erro'), 'info');
     } finally {
       setIsLoadingDiagnosis(false);
     }

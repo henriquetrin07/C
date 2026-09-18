@@ -209,6 +209,9 @@ export async function executeCCode(
         flags.push(...parts);
       }
 
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout to avoid hanging
+
       const res = await fetch('/api/compile-run', {
         method: 'POST',
         headers: {
@@ -217,13 +220,15 @@ export async function executeCCode(
         },
         body: JSON.stringify({
           files: files.map((f) => ({ name: f.name, content: f.content })),
-          stdin,
+          stdin: typeof stdin === 'string' ? stdin : '',
           compiler: options.compiler,
           standard: options.standard,
           optimization: options.optimization,
           flags,
         }),
+        signal: controller.signal,
       });
+      clearTimeout(timeout);
 
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
